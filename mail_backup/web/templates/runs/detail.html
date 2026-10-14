@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Запуск #{{ run.id }}{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <h1>{{ KIND_LABELS[run.kind] | capitalize }} #{{ run.id }}: {{ run.mailbox.name }}</h1>
+    <a class="button" href="/runs?mailbox={{ run.mailbox_id }}">История ящика</a>
+  </div>
+  {% include "runs/_live.html" %}
+</section>
+{% endblock %}

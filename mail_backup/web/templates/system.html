@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Система{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Система</h1>
+  <dl class="facts">
+    <dt>Режим</dt><dd>{{ env.MB_DEPLOY_MODE | upper }}</dd>
+    <dt>Воркер</dt>
+    <dd>{% if worker_ok %}<span class="badge badge-success">работает</span>{% else %}<span class="badge badge-failed">не отвечает</span>
+        <div class="muted small">sudo systemctl status mail-backup-worker</div>{% endif %}</dd>
+    <dt>Dovecot (хранилище)</dt>
+    <dd>{% if dovecot_ok %}<span class="badge badge-success">доступен</span>{% else %}<span class="badge badge-failed">недоступен</span>
+        <div class="muted small">sudo systemctl status dovecot</div>{% endif %}
+        <div class="muted small">{{ dovecot_version }}</div></dd>
+    <dt>imapsync</dt><dd>{{ imapsync_version }}</dd>
+    <dt>Диск с бэкапами</dt>
+    <dd>
+      {% if backup_mounted %}отдельный диск{% else %}<span class="{{ 'text-error' if env.MB_DEPLOY_MODE == 'prod' }}">не точка монтирования (системный диск)</span>{% endif %}
+      {% if disk %}<div class="muted small">свободно {{ disk.free | size }} из {{ disk.total | size }} (занято {{ disk.percent }}%)</div>{% endif %}
+    </dd>
+  </dl>
+</section>
+
+<section class="card">
+  <h2>Базовые настройки сервера</h2>
+  <p class="hint">Задаются установщиком в <code>/etc/mail_backup/mail_backup.env</code> и в панели не меняются:
+    от них зависят конфиг Dovecot и расположение данных.</p>
+  <dl class="facts">
+    {% for key, value in env.items() %}
+      <dt><code>{{ key }}</code></dt><dd>{{ value }}</dd>
+    {% endfor %}
+  </dl>
+</section>
+{% endblock %}

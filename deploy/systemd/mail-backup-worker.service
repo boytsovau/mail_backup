@@ -1,0 +1,28 @@
+# Воркер mail_backup: очередь запусков imapsync и расписание.
+# Плейсхолдеры @...@ подставляет deploy/install.sh.
+[Unit]
+Description=mail_backup: воркер (очередь и расписание бэкапов)
+After=network-online.target dovecot.service
+Wants=network-online.target
+@REQUIRES_MOUNTS@
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=/
+# imapsync (Perl) ожидает HOME; временные файлы он пишет в --tmpdir из настроек
+Environment=HOME=@DATA_DIR@
+ExecStart=@APP_DIR@/.venv/bin/mail-backup worker
+Restart=always
+RestartSec=5
+# Воркер при остановке ждёт завершения imapsync до 30 секунд
+TimeoutStopSec=45
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

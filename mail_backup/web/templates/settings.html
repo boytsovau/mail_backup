@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf with context %}
+{% block title %}Настройки{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Настройки</h1>
+  <form method="post" action="/settings" class="stack narrow-form">
+    {{ csrf() }}
+    <label>Одновременных запусков imapsync
+      <input name="max_parallel_jobs" type="number" min="1" max="10" value="{{ prefs.max_parallel_jobs }}">
+      <span class="hint">Один ящик всегда обрабатывается не больше чем одним запуском.</span>
+    </label>
+    <label>Часовой пояс
+      <input name="timezone" value="{{ prefs.timezone }}" placeholder="Europe/Moscow">
+      <span class="hint">Для расписаний и отображения дат. Формат IANA: Europe/Moscow, Asia/Yekaterinburg…</span>
+    </label>
+    <label>Хранить логи запусков, дней
+      <input name="log_retention_days" type="number" min="1" max="3650" value="{{ prefs.log_retention_days }}">
+      <span class="hint">Статистика запусков остаётся в базе и после удаления логов.</span>
+    </label>
+    <button class="primary">Сохранить</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Учётная запись администратора</h2>
+  <form method="post" action="/settings/account" class="stack narrow-form">
+    {{ csrf() }}
+    <label>Логин <input name="login" value="{{ admin_login }}" autocomplete="username" required></label>
+    <label>Текущий пароль <input name="current_password" type="password" autocomplete="current-password" required></label>
+    <label>Новый пароль (не короче 10 символов)
+      <input name="password" type="password" minlength="10" autocomplete="new-password" required></label>
+    <label>Повторите новый пароль <input name="password2" type="password" minlength="10" autocomplete="new-password" required></label>
+    <span class="hint">После смены пароля все остальные сеансы входа завершатся.</span>
+    <button class="primary">Сменить</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status, progress with context %}
+{% block title %}Запуски{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <h1>Запуски{% if mailbox %}: {{ mailbox.name }}{% endif %}</h1>
+    {% if mailbox %}<a class="button" href="/runs">Все ящики</a>{% endif %}
+  </div>
+  {% if runs %}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>#</th><th>Ящик</th><th>Тип</th><th>Статус</th><th>Начат</th><th>Длительность</th><th>Писем</th><th>Объём</th></tr>
+    </thead>
+    <tbody>
+    {% for run in runs %}
+      <tr>
+        <td><a href="/runs/{{ run.id }}">{{ run.id }}</a></td>
+        <td>{{ run.mailbox.name }}</td>
+        <td>{{ KIND_LABELS[run.kind] }}<div class="muted small">{{ TRIGGER_LABELS[run.trigger] }}</div></td>
+        <td>{{ status(run) }}{% if run.status == 'running' %}{{ progress(run) }}{% endif %}</td>
+        <td>{{ dt(run.started_at or run.created_at) }}</td>
+        <td>{{ run.duration_seconds | duration }}</td>
+        <td>{{ run.messages_transferred if run.messages_transferred is not none else '—' }}</td>
+        <td>{{ run.bytes_transferred | size }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if pages > 1 %}
+  <div class="pager">
+    {% set base = '/runs?' ~ ('mailbox=' ~ mailbox.id ~ '&' if mailbox else '') %}
+    {% if page > 1 %}<a class="button small" href="{{ base }}page={{ page - 1 }}">← Новее</a>{% endif %}
+    <span class="muted">страница {{ page }} из {{ pages }}</span>
+    {% if page < pages %}<a class="button small" href="{{ base }}page={{ page + 1 }}">Старее →</a>{% endif %}
+  </div>
+  {% endif %}
+  {% else %}
+    <p class="muted">Запусков пока не было.</p>
+  {% endif %}
+</section>
+{% endblock %}

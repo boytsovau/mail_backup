@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf with context %}
+{% set bare = true %}
+{% block title %}Вход{% endblock %}
+{% block content %}
+<div class="card auth-card">
+  <h1>📬 Бэкап почты</h1>
+  {% if error %}<div class="flash flash-error">{{ error }}</div>{% endif %}
+  <form method="post" action="/login" class="stack">
+    {{ csrf() }}
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>Логин <input name="login" value="{{ login or '' }}" autocomplete="username" required autofocus></label>
+    <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary">Войти</button>
+  </form>
+</div>
+{% endblock %}

@@ -3,8 +3,9 @@
 from collections.abc import Iterator
 from functools import lru_cache
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.schema import CreateColumn
 
 from .config import get_settings
 
@@ -49,7 +50,25 @@ def get_session() -> Iterator[Session]:
 
 
 def create_tables() -> None:
+    """Создаёт таблицы и добавляет недостающие колонки в существующие.
+
+    Это упрощённая миграция: только добавление колонок (они обязаны быть
+    nullable или иметь server_default). Переименования и удаления колонок
+    потребуют Alembic.
+    """
     # Импорт нужен, чтобы модели зарегистрировались в Base.metadata
     from . import models  # noqa: F401
 
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            existing = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in existing:
+                    continue
+                if not column.nullable and column.server_default is None:
+                    raise RuntimeError(f"Новая колонка {table.name}.{column.name} без server_default")
+                ddl = CreateColumn(column).compile(dialect=engine.dialect)
+                conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {ddl}"))

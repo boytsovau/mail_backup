@@ -1,0 +1,23 @@
+# Веб-панель mail_backup. Плейсхолдеры @...@ подставляет deploy/install.sh.
+[Unit]
+Description=mail_backup: веб-панель
+After=network.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=/
+# Только localhost: снаружи панель доступна через nginx (HTTPS)
+ExecStart=@APP_DIR@/.venv/bin/uvicorn mail_backup.main:app --host 127.0.0.1 --port @WEB_PORT@ --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header
+Restart=on-failure
+RestartSec=3
+
+# Ограничения: сервису нужны только свои каталоги данных
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

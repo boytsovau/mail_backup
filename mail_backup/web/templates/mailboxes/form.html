@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf, field_error with context %}
+{% block title %}{{ 'Ящик ' ~ box.name if box else 'Новый ящик' }}{% endblock %}
+{% block content %}
+{# Пресеты хостеров для app.js: тип application/json — данные, не исполняемый код #}
+<script type="application/json" id="presets">{{ presets | tojson }}</script>
+
+<section class="card">
+  <h1>{{ 'Ящик «' ~ box.name ~ '»' if box else 'Новый ящик' }}</h1>
+
+  <form method="post" id="mailbox-form" class="form-grid">
+    {{ csrf() }}
+    {% if box %}<input type="hidden" name="mailbox_id" value="{{ box.id }}">{% endif %}
+
+    <fieldset>
+      <legend>Подключение</legend>
+      <label>Хостер
+        <select name="provider" id="provider">
+          {% for p in presets %}
+            <option value="{{ p.key }}" {{ 'selected' if p.key == form.provider }}>{{ p.title }}</option>
+          {% endfor %}
+        </select>
+        {{ field_error(errors, 'provider') }}
+      </label>
+      <p class="hint" id="provider-note">{{ provider_note }}</p>
+
+      <div class="row">
+        <label class="grow">IMAP-сервер
+          <input name="host" id="host" value="{{ form.host }}" required>
+          {{ field_error(errors, 'host') }}
+        </label>
+        <label>Порт
+          <input name="port" id="port" value="{{ form.port }}" inputmode="numeric" size="6" required>
+          {{ field_error(errors, 'port') }}
+        </label>
+        <label>Шифрование
+          <select name="security" id="security">
+            <option value="ssl" {{ 'selected' if form.security == 'ssl' }}>SSL/TLS</option>
+            <option value="starttls" {{ 'selected' if form.security == 'starttls' }}>STARTTLS</option>
+            <option value="plain" {{ 'selected' if form.security == 'plain' }}>нет</option>
+          </select>
+        </label>
+      </div>
+
+      <label>Логин (адрес ящика)
+        <input name="login" value="{{ form.login }}" {{ 'readonly' if box }} autocomplete="off" required>
+        {% if box %}<span class="hint">Логин не меняется: другой логин — это другой ящик, добавьте его отдельно.</span>{% endif %}
+        {{ field_error(errors, 'login') }}
+      </label>
+      <label>Пароль приложения
+        <input name="password" type="password" autocomplete="new-password"
+               placeholder="{{ 'не менять' if box else '' }}" {{ '' if box else 'required' }}>
+        {{ field_error(errors, 'password') }}
+      </label>
+
+      <button type="button" hx-post="/mailboxes/check" hx-include="#mailbox-form"
+              hx-target="#check-result" hx-indicator="#check-spinner">Проверить подключение</button>
+      <span id="check-spinner" class="htmx-indicator muted">проверяю…</span>
+      <div id="check-result"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Бэкап</legend>
+      <label>Название
+        <input name="name" value="{{ form.name }}" placeholder="по умолчанию — логин">
+      </label>
+      <label class="check"><input type="checkbox" name="enabled" {{ 'checked' if form.enabled }}> Бэкап по расписанию включён</label>
+      <label>Время запуска (часовой пояс {{ prefs.timezone }})
+        <input name="schedule" value="{{ form.schedule }}" placeholder="03:00 или 03:00, 15:00">
+        <span class="hint">Через запятую можно указать несколько запусков в сутки. Пусто — только вручную.</span>
+        {{ field_error(errors, 'schedule') }}
+      </label>
+      <label>Хранить историю, дней
+        <input name="retention_days" value="{{ form.retention_days }}" inputmode="numeric" size="6">
+        <span class="hint">Сколько дней хранить снимки restic (в т.ч. удалённые на хостере письма). 0 — бессрочно. Заработает вместе со снимками (этап 6).</span>
+        {{ field_error(errors, 'retention_days') }}
+      </label>
+      <label>Исключить папки (регулярное выражение)
+        <input name="exclude_folders" value="{{ form.exclude_folders }}" placeholder="например: ^Спам$|^Корзина$">
+        {{ field_error(errors, 'exclude_folders') }}
+      </label>
+      <label>Заметка
+        <textarea name="note" rows="2">{{ form.note }}</textarea>
+      </label>
+    </fieldset>
+
+    <div class="form-actions">
+      <button class="primary">Сохранить</button>
+      <a class="button" href="/mailboxes">Отмена</a>
+    </div>
+  </form>
+
+  {% if box %}
+  <hr>
+  <div class="danger-zone">
+    <form method="post" action="/mailboxes/{{ box.id }}/backup" class="inline">
+      {{ csrf() }}
+      <input type="hidden" name="dry_run" value="1">
+      <button title="imapsync --dry: показать, что будет скопировано, ничего не копируя">Пробный прогон</button>
+    </form>
+    <form method="post" action="/mailboxes/{{ box.id }}/delete" class="inline"
+          data-confirm="Удалить ящик «{{ box.name }}» из панели? Бэкап на диске останется.">
+      {{ csrf() }}
+      <button class="danger">Удалить ящик</button>
+    </form>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

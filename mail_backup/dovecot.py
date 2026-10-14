@@ -9,6 +9,8 @@ import base64
 import hashlib
 import os
 import secrets
+import tempfile
+import threading
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,6 +18,9 @@ from sqlalchemy.orm import Session
 from . import crypto
 from .config import get_settings
 from .models import Mailbox
+
+# Воркер выполняет несколько запусков в потоках — файл пишет один поток за раз
+_sync_lock = threading.Lock()
 
 # Символы, недопустимые в имени пользователя: ломают формат passwd-file или путь Maildir
 _BAD_LOGIN_CHARS = set(":/\\\n\r\t ") | {"\0"}
@@ -61,10 +66,16 @@ def sync_users(session: Session) -> int:
         lines.append(f"{box.local_login}:{ssha512(password)}::::::\n")
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
-    with os.fdopen(fd, "w") as f:
-        f.writelines(lines)
-    # Атомарная замена: Dovecot никогда не увидит недописанный файл
-    os.replace(tmp, path)
+    with _sync_lock:
+        # Уникальное имя временного файла: веб и воркер — разные процессы
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".users.")
+        try:
+            os.fchmod(fd, 0o640)
+            with os.fdopen(fd, "w") as f:
+                f.writelines(lines)
+            # Атомарная замена: Dovecot никогда не увидит недописанный файл
+            os.replace(tmp, path)
+        except BaseException:
+            os.unlink(tmp)
+            raise
     return len(lines)

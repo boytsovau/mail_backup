@@ -13,7 +13,7 @@ from .config import get_settings
 from .crypto import ensure_keys
 from .db import create_tables, new_session
 from .jobs import execute_run
-from .models import Mailbox, Run, RunKind
+from .models import Mailbox, Run, RunKind, RunTrigger
 from .providers import PROVIDERS, Security, get_provider
 
 
@@ -34,14 +34,32 @@ def cmd_init(_args: argparse.Namespace) -> None:
     print(f"Хранилище бэкапов: {settings.maildir_root}")
 
 
+def cmd_setup_link(args: argparse.Namespace) -> None:
+    """Одноразовая ссылка для создания администратора в веб-панели."""
+    with new_session() as session:
+        if auth.admin_exists(session):
+            if args.if_no_admin:
+                return
+            sys.exit("Администратор уже создан. Сброс пароля: mail-backup set-admin <логин>")
+        token = auth.create_setup_token(session)
+    print(f"{args.base_url.rstrip('/')}/setup?token={token}")
+
+
+def cmd_worker(_args: argparse.Namespace) -> None:
+    from .worker import main as worker_main
+
+    worker_main()
+
+
 def cmd_set_admin(args: argparse.Namespace) -> None:
     password = getpass.getpass("Новый пароль админа: ")
-    if len(password) < 10:
-        sys.exit("Пароль должен быть не короче 10 символов")
     if password != getpass.getpass("Повторите пароль: "):
         sys.exit("Пароли не совпадают")
     with new_session() as session:
-        auth.set_admin(session, args.login, password)
+        try:
+            auth.set_admin(session, args.login, password)
+        except ValueError as exc:
+            sys.exit(str(exc))
     print(f"Админ «{args.login}» сохранён")
 
 
@@ -99,7 +117,7 @@ def cmd_backup(args: argparse.Namespace) -> None:
         box = session.get(Mailbox, args.mailbox_id)
         if box is None:
             sys.exit(f"Ящик #{args.mailbox_id} не найден")
-        run = Run(kind=RunKind.BACKUP, mailbox_id=box.id, dry_run=args.dry)
+        run = Run(kind=RunKind.BACKUP, mailbox_id=box.id, trigger=RunTrigger.MANUAL, dry_run=args.dry)
         session.add(run)
         session.commit()
         print(f"Запуск #{run.id}: бэкап {box.login}, лог пишется в каталог {get_settings().logs_dir}")
@@ -127,7 +145,14 @@ def main() -> None:
 
     sub.add_parser("init", help="создать каталоги, ключи и БД").set_defaults(func=cmd_init)
 
-    p = sub.add_parser("set-admin", help="задать логин и пароль администратора")
+    p = sub.add_parser("setup-link", help="ссылка для создания администратора в веб-панели")
+    p.add_argument("--base-url", default="https://<адрес-сервера>", help="адрес панели")
+    p.add_argument("--if-no-admin", action="store_true", help="молча выйти, если админ уже есть")
+    p.set_defaults(func=cmd_setup_link)
+
+    sub.add_parser("worker", help="воркер: очередь, расписание (запускает systemd)").set_defaults(func=cmd_worker)
+
+    p = sub.add_parser("set-admin", help="сбросить логин и пароль администратора")
     p.add_argument("login")
     p.set_defaults(func=cmd_set_admin)
 

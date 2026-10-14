@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf with context %}
+{% set bare = true %}
+{% block title %}Первичная настройка{% endblock %}
+{% block content %}
+<div class="card auth-card">
+  <h1>Первичная настройка</h1>
+  {% if not valid %}
+    <p>Ссылка недействительна или устарела.</p>
+    <p>Новую ссылку выдаст команда на сервере:</p>
+    <pre class="cmd">sudo mail-backup setup-link</pre>
+  {% else %}
+    <p class="muted">Задайте логин и пароль администратора. Ссылка одноразовая.</p>
+    {% if error %}<div class="flash flash-error">{{ error }}</div>{% endif %}
+    <form method="post" action="/setup" class="stack">
+      {{ csrf() }}
+      <input type="hidden" name="token" value="{{ token }}">
+      <label>Логин <input name="login" value="{{ login or 'admin' }}" autocomplete="username" required></label>
+      <label>Пароль (не короче 10 символов)
+        <input name="password" type="password" minlength="10" autocomplete="new-password" required></label>
+      <label>Повторите пароль <input name="password2" type="password" minlength="10" autocomplete="new-password" required></label>
+      <button class="primary">Создать администратора</button>
+    </form>
+  {% endif %}
+</div>
+{% endblock %}

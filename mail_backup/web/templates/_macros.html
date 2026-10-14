@@ -1,0 +1,27 @@
+{% macro status(run) -%}
+  {%- if run -%}
+    <span class="badge badge-{{ run.status }}">{{ STATUS_LABELS[run.status] }}{% if run.dry_run %} · пробный{% endif %}</span>
+  {%- else -%}
+    <span class="muted">—</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro progress(run) -%}
+  {%- if run.progress_total -%}
+    {% set pct = (run.progress_done * 100 / run.progress_total) | round | int %}
+    <div class="progress" title="{{ run.progress_done }} из {{ run.progress_total }} писем">
+      <div class="progress-bar" style="width: {{ pct }}%"></div>
+      <span>{{ run.progress_done }} / {{ run.progress_total }} ({{ pct }}%){% if run.eta_seconds %} · осталось ≈ {{ run.eta_seconds | duration }}{% endif %}</span>
+    </div>
+  {%- elif run.status == 'running' -%}
+    <span class="muted">подключение, подсчёт писем…</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro csrf() -%}
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+{%- endmacro %}
+
+{% macro field_error(errors, name) -%}
+  {%- if errors.get(name) %}<div class="field-error">{{ errors[name] }}</div>{% endif -%}
+{%- endmacro %}

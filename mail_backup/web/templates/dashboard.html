@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status, progress with context %}
+{% block title %}Обзор{% endblock %}
+{% block content %}
+{# Пока есть активные запуски, обзор обновляется сам #}
+<div id="dash" {% if active_runs %}hx-get="/" hx-trigger="every 5s" hx-select="#dash" hx-swap="outerHTML"{% endif %}>
+
+{% if not worker_ok %}
+  <div class="flash flash-error">
+    Воркер не отвечает — запуски из очереди и расписание не выполняются.
+    На сервере: <code>sudo systemctl status mail-backup-worker</code>
+  </div>
+{% endif %}
+
+<div class="tiles">
+  <div class="tile">
+    <div class="tile-label">Ящиков</div>
+    <div class="tile-value">{{ rows | length }}</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Сейчас в работе</div>
+    <div class="tile-value">{{ active_runs | length }}</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Бэкапы на диске</div>
+    <div class="tile-value">{{ (rows | map(attribute='last_ok') | select | map(attribute='host2_bytes') | select | sum) | size }}</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Свободно на диске</div>
+    {% if disk %}
+      <div class="tile-value">{{ disk.free | size }}</div>
+      <div class="meter"><div style="width: {{ disk.percent }}%" class="{{ 'meter-warn' if disk.percent >= 85 }}"></div></div>
+      <div class="tile-sub">занято {{ disk.percent }}% из {{ disk.total | size }}</div>
+    {% else %}
+      <div class="tile-value muted">—</div>
+    {% endif %}
+  </div>
+</div>
+
+{% if active_runs %}
+<section class="card">
+  <h2>Сейчас выполняется</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Ящик</th><th>Тип</th><th>Статус</th><th>Прогресс</th></tr></thead>
+    <tbody>
+    {% for run in active_runs %}
+      <tr>
+        <td><a href="/runs/{{ run.id }}">{{ run.id }}</a></td>
+        <td>{{ run.mailbox.name }}</td>
+        <td>{{ KIND_LABELS[run.kind] }}</td>
+        <td>{{ status(run) }}</td>
+        <td class="wide">{{ progress(run) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card-head">
+    <h2>Ящики</h2>
+    <a class="button" href="/mailboxes/new">+ Добавить ящик</a>
+  </div>
+  {% if rows %}
+    {% include "mailboxes/_table.html" %}
+  {% else %}
+    <p class="muted">Ящиков пока нет. <a href="/mailboxes/new">Добавьте первый</a>.</p>
+  {% endif %}
+</section>
+</div>
+{% endblock %}

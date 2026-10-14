@@ -1,0 +1,49 @@
+{% from "_macros.html" import status, progress, csrf with context %}
+{% set active = run.status in ('queued', 'running') %}
+{# Пока запуск активен, фрагмент сам себя перезапрашивает; после завершения опрос прекращается #}
+<div id="run-live" {% if active %}hx-get="/runs/{{ run.id }}/live" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  <div class="run-head">
+    {{ status(run) }}
+    <span class="muted">{{ TRIGGER_LABELS[run.trigger] }}</span>
+    {% if active and not run.cancel_requested %}
+      <form method="post" action="/runs/{{ run.id }}/cancel" class="inline"
+            data-confirm="Остановить запуск #{{ run.id }}?">
+        {{ csrf() }}
+        <button class="small danger">Отменить</button>
+      </form>
+    {% elif active %}
+      <span class="muted">останавливается…</span>
+    {% endif %}
+  </div>
+
+  {% if run.status == 'queued' %}
+    <p class="muted">Ожидает свободного слота воркера.</p>
+  {% endif %}
+  {{ progress(run) }}
+
+  {% if run.error_message %}
+    <div class="flash flash-error">{{ run.error_message }}</div>
+  {% endif %}
+
+  <dl class="facts">
+    <dt>Создан</dt><dd>{{ dt(run.created_at) }}</dd>
+    <dt>Начат</dt><dd>{{ dt(run.started_at) }}</dd>
+    <dt>Завершён</dt><dd>{{ dt(run.finished_at) }}</dd>
+    <dt>Длительность</dt><dd>{{ run.duration_seconds | duration }}</dd>
+    {% if not active %}
+    <dt>Писем перенесено</dt><dd>{{ run.messages_transferred if run.messages_transferred is not none else '—' }}</dd>
+    <dt>Писем пропущено</dt><dd title="Уже были в бэкапе">{{ run.messages_skipped if run.messages_skipped is not none else '—' }}</dd>
+    <dt>Перенесено</dt><dd>{{ run.bytes_transferred | size }}</dd>
+    <dt>Ошибок</dt><dd>{{ run.errors_count if run.errors_count is not none else '—' }}</dd>
+    <dt>Папок</dt><dd>{{ run.folders_synced if run.folders_synced is not none else '—' }}</dd>
+    <dt>В источнике</dt><dd>{% if run.host1_messages is not none %}{{ run.host1_messages }} писем, {{ run.host1_bytes | size }}{% else %}—{% endif %}</dd>
+    <dt>В получателе</dt><dd>{% if run.host2_messages is not none %}{{ run.host2_messages }} писем, {{ run.host2_bytes | size }}{% else %}—{% endif %}</dd>
+    <dt>Код выхода</dt><dd>{{ run.exit_code if run.exit_code is not none else '—' }}</dd>
+    {% endif %}
+  </dl>
+
+  {% if log %}
+    <h2>Лог imapsync</h2>
+    <pre class="log">{{ log }}</pre>
+  {% endif %}
+</div>

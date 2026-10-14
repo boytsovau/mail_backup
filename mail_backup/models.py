@@ -11,13 +11,23 @@ from .providers import Security
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    """Текущее время UTC без tzinfo — все даты в БД хранятся так.
+
+    SQLite не хранит часовой пояс, поэтому единый «наивный UTC» исключает
+    ошибки сравнения aware/naive. В часовой пояс админки переводим при выводе.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class RunKind(StrEnum):
     BACKUP = "backup"  # хостер → локальный Dovecot
     RESTORE = "restore"  # локальный Dovecot → любой ящик
     MIGRATE = "migrate"  # хостер → другой хостер напрямую
+
+
+class RunTrigger(StrEnum):
+    MANUAL = "manual"  # кнопка в админке или CLI
+    SCHEDULE = "schedule"  # расписание ящика
 
 
 class RunStatus(StrEnum):
@@ -49,8 +59,9 @@ class Mailbox(Base):
     local_password_enc: Mapped[str] = mapped_column(Text)
 
     enabled: Mapped[bool] = mapped_column(default=True)
-    # Расписание бэкапа в формате cron, пусто — только ручной запуск
-    schedule: Mapped[str | None] = mapped_column(String(100))
+    # Время ежедневного бэкапа «ЧЧ:ММ[,ЧЧ:ММ...]» в часовом поясе админки,
+    # пусто — только ручной запуск
+    schedule: Mapped[str | None] = mapped_column(String(200))
     # Срок хранения в днях, 0 — хранить бессрочно
     retention_days: Mapped[int] = mapped_column(default=0)
     # Регулярное выражение для папок, которые не нужно копировать
@@ -71,8 +82,11 @@ class Run(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     kind: Mapped[RunKind] = mapped_column(String(20))
     status: Mapped[RunStatus] = mapped_column(String(20), default=RunStatus.QUEUED, index=True)
+    trigger: Mapped[RunTrigger] = mapped_column(String(20), default=RunTrigger.MANUAL, server_default="manual")
     # Пробный прогон imapsync --dry: ничего не копирует, только показывает план
     dry_run: Mapped[bool] = mapped_column(default=False)
+    # Админ нажал «Отменить»; воркер завершит процесс imapsync
+    cancel_requested: Mapped[bool] = mapped_column(default=False, server_default="0")
 
     # Для бэкапа и переноса — источник, для восстановления — чей бэкап берём
     mailbox_id: Mapped[int] = mapped_column(ForeignKey("mailboxes.id", ondelete="CASCADE"), index=True)

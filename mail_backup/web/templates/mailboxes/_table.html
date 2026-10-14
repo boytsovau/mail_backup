@@ -1,0 +1,59 @@
+{% from "_macros.html" import status, progress, csrf with context %}
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th>Ящик</th>
+      <th>Последний бэкап</th>
+      <th>В бэкапе</th>
+      <th>Следующий</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    {% set box = row.box %}
+    <tr class="{{ 'disabled' if not box.enabled }}">
+      <td>
+        <a href="/mailboxes/{{ box.id }}/edit"><strong>{{ box.name }}</strong></a>
+        <div class="muted small">{{ box.login }} · {{ box.host }}</div>
+      </td>
+      <td>
+        {% if row.active %}
+          <a href="/runs/{{ row.active.id }}">{{ status(row.active) }}</a>
+          {{ progress(row.active) }}
+        {% elif row.last_run %}
+          <a href="/runs/{{ row.last_run.id }}">{{ status(row.last_run) }}</a>
+          <div class="muted small">{{ dt(row.last_run.finished_at) }}</div>
+          {% if row.last_ok and row.last_ok.id != row.last_run.id %}
+            <div class="muted small">последний удачный: {{ dt(row.last_ok.finished_at) }}</div>
+          {% endif %}
+        {% else %}
+          <span class="muted">ещё не было</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if row.last_ok and row.last_ok.host2_messages is not none %}
+          {{ row.last_ok.host2_messages }} писем
+          <div class="muted small">{{ row.last_ok.host2_bytes | size }}</div>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>
+        {% if not box.enabled %}<span class="muted">выключен</span>
+        {% elif row.next_at %}{{ dt(row.next_at) }}
+        {% else %}<span class="muted">вручную</span>{% endif %}
+      </td>
+      <td class="actions">
+        {% if not row.active %}
+        <form method="post" action="/mailboxes/{{ box.id }}/backup">
+          {{ csrf() }}
+          <button class="small primary" title="Запустить бэкап сейчас">▶ Бэкап</button>
+        </form>
+        {% endif %}
+        <a class="button small" href="/runs?mailbox={{ box.id }}">История</a>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>

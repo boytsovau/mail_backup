@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Ящики{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <h1>Почтовые ящики</h1>
+    <a class="button primary" href="/mailboxes/new">+ Добавить ящик</a>
+  </div>
+  {% if rows %}
+    {% include "mailboxes/_table.html" %}
+  {% else %}
+    <p class="muted">Ящиков пока нет.</p>
+  {% endif %}
+</section>
+{% endblock %}

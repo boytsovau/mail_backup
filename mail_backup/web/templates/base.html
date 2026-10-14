@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{% endblock %} — Бэкап почты</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📬</text></svg>">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+{# Токен CSRF уходит с каждым htmx-запросом в заголовке #}
+<body hx-headers='{"X-CSRF-Token": "{{ csrf_token(request) }}"}'>
+{% if not bare %}
+<header class="topbar">
+  <a class="brand" href="/">📬 Бэкап почты</a>
+  <nav>
+    {% set path = request.url.path %}
+    <a href="/" class="{{ 'active' if path == '/' }}">Обзор</a>
+    <a href="/mailboxes" class="{{ 'active' if path.startswith('/mailboxes') }}">Ящики</a>
+    <a href="/runs" class="{{ 'active' if path.startswith('/runs') }}">Запуски</a>
+    <a href="/settings" class="{{ 'active' if path.startswith('/settings') }}">Настройки</a>
+    <a href="/system" class="{{ 'active' if path.startswith('/system') }}">Система</a>
+  </nav>
+  <form method="post" action="/logout" class="logout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="link">Выйти</button>
+  </form>
+</header>
+{% endif %}
+<main class="{{ 'narrow' if bare }}">
+  {% for kind, message in flashes %}
+    <div class="flash flash-{{ kind }}">{{ message }}</div>
+  {% endfor %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

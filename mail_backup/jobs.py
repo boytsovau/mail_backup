@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import crypto, dovecot
@@ -11,7 +12,7 @@ from .config import get_settings
 from .imapsync.command import Endpoint, Job
 from .imapsync.parser import Progress, status_from_exit
 from .imapsync.runner import run_imapsync
-from .models import Mailbox, Run, RunKind, RunStatus, utcnow
+from .models import Mailbox, Run, RunKind, RunStatus, RunTrigger, utcnow
 from .providers import Security, get_provider
 
 # Не чаще раза в N секунд пишем прогресс в БД, чтобы не нагружать SQLite
@@ -86,6 +87,25 @@ def build_job(run: Run, *, just_login: bool = False) -> Job:
     )
 
 
+def active_run(session: Session, mailbox_id: int) -> Run | None:
+    """Запуск ящика в очереди или в работе (одновременно — не больше одного)."""
+    return session.scalars(
+        select(Run)
+        .where(Run.mailbox_id == mailbox_id, Run.status.in_([RunStatus.QUEUED, RunStatus.RUNNING]))
+        .limit(1)
+    ).first()
+
+
+def enqueue_backup(session: Session, box: Mailbox, trigger: RunTrigger, *, dry_run: bool = False) -> Run:
+    """Ставит бэкап в очередь; если ящик уже в работе — возвращает текущий запуск."""
+    if existing := active_run(session, box.id):
+        return existing
+    run = Run(kind=RunKind.BACKUP, mailbox_id=box.id, trigger=trigger, dry_run=dry_run)
+    session.add(run)
+    session.commit()
+    return run
+
+
 def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> Run:
     """Выполняет запуск синхронно и сохраняет результат в БД."""
     settings = get_settings()
@@ -134,8 +154,10 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
         run.status = RunStatus.FAILED
         run.error_message = f"{type(exc).__name__}: {exc}"
     else:
+        # Флаг отмены ставит веб-панель из другого процесса — перечитываем из БД
+        session.refresh(run, ["cancel_requested"])
         run.exit_code = result.exit_code
-        run.status = status_from_exit(result.exit_code)
+        run.status = status_from_exit(result.exit_code, cancelled=run.cancel_requested)
         for name, value in result.stats.as_dict().items():
             setattr(run, name, value)
         if result.last_progress:
