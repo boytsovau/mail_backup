@@ -74,7 +74,8 @@
   <dl class="facts">
     {% if run.kind in ('restore', 'migrate') %}
     <dt>Откуда</dt>
-    <dd>{% if run.kind == 'restore' %}бэкап на этом сервере{% else %}{{ run.mailbox.login }} на {{ run.mailbox.host }}{% endif %}</dd>
+    <dd>{% if run.source_snapshot %}снимок restic от {{ dt(run.source_snapshot_time) }} <span class="muted">({{ run.source_snapshot[:8] }})</span>
+        {% elif run.kind == 'restore' %}бэкап на этом сервере{% else %}{{ run.mailbox.login }} на {{ run.mailbox.host }}{% endif %}</dd>
     <dt>Куда</dt>
     <dd>{{ run.target_login }} на {{ run.target_host }}:{{ run.target_port }}{% if run.target_subfolder %}, в папку «{{ run.target_subfolder }}»{% endif %}</dd>
     {% endif %}
@@ -95,6 +96,12 @@
     <dt>В источнике</dt><dd>{% if run.host1_messages is not none %}{{ run.host1_messages }} писем, {{ run.host1_bytes | size }}{% else %}—{% endif %}</dd>
     <dt>В получателе</dt><dd>{% if run.host2_messages is not none %}{{ run.host2_messages }} писем, {{ run.host2_bytes | size }}{% else %}—{% endif %}</dd>
     <dt>Код выхода</dt><dd>{{ run.exit_code if run.exit_code is not none else '—' }}</dd>
+    {% if run.kind == 'backup' and not run.dry_run %}
+    <dt>Снимок restic</dt>
+    <dd>{% if run.snapshot_id %}{{ run.snapshot_id[:8] }}{% if run.snapshot_added is not none %} <span class="muted">· добавлено {{ run.snapshot_added | size }}</span>{% endif %}{% endif %}
+        {% if run.snapshot_error %}<div class="text-error">{{ run.snapshot_error }}</div>
+        {% elif not run.snapshot_id %}<span class="muted">не делался{% if run.status in ('success', 'warning') %} — <a href="/restic">снимки выключены или не настроены</a>{% endif %}</span>{% endif %}</dd>
+    {% endif %}
     {% endif %}
   </dl>
 

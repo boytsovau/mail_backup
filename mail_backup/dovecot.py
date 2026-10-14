@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from . import crypto
 from .config import get_settings
-from .models import Mailbox
+from .models import Mailbox, Run, RunStatus
 
 # Воркер выполняет несколько запусков в потоках — файл пишет один поток за раз
 _sync_lock = threading.Lock()
@@ -45,6 +45,9 @@ def new_local_credentials(session: Session, login: str) -> tuple[str, str]:
     """
     base = login.strip().lower()
     validate_local_login(base)
+    # С «_» начинаются временные учётки восстановления из снимка (Run.temp_login)
+    if base.startswith("_"):
+        raise ValueError(f"Логин не может начинаться с «_»: {login!r}")
     taken = set(session.scalars(select(Mailbox.local_login)))
     candidate, n = base, 1
     # Один и тот же адрес может быть заведён дважды (например, у разных хостеров)
@@ -64,6 +67,11 @@ def sync_users(session: Session) -> int:
         password = crypto.decrypt(box.local_password_enc)
         # user:password:uid:gid:gecos:home:shell:extra — uid/gid/home задаёт userdb static
         lines.append(f"{box.local_login}:{ssha512(password)}::::::\n")
+    # Временные учётки: снимок распакован в Maildir/_restore_<id>, imapsync читает его
+    restores = select(Run).where(Run.snapshot_password_enc.is_not(None),
+                                 Run.status.in_([RunStatus.QUEUED, RunStatus.RUNNING]))
+    for run in session.scalars(restores.order_by(Run.id)):
+        lines.append(f"{run.temp_login}:{ssha512(crypto.decrypt(run.snapshot_password_enc))}::::::\n")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with _sync_lock:

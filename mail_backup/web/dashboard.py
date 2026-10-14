@@ -13,12 +13,13 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import app_settings, auth, stats, storage_estimate
+from .. import app_settings, auth, restic, stats, storage_estimate
 from ..config import get_settings
 from ..db import get_session
-from ..jobs import active_run, enqueue_run, last_backup
+from ..jobs import active_run, enqueue_run, last_backup, snapshots_wanted
 from ..models import Mailbox, Run, RunKind, RunStatus, RunTrigger, utcnow
-from ..worker import next_slot, parse_schedule, worker_alive
+from ..schedule import next_slot, parse_schedule
+from ..worker import worker_alive
 from .common import csrf_protect, flash, render, require_admin, templates
 
 router = APIRouter(dependencies=[Depends(require_admin)])
@@ -37,6 +38,7 @@ class Health(StrEnum):
     WARNING = "warning"  # последний бэкап прошёл с ошибками по письмам
     FAILED = "failed"  # последний настоящий бэкап — сбой или отмена
     STALE = "stale"  # по расписанию, но удачного бэкапа давно не было
+    SNAPSHOT = "snapshot"  # снимки включены, но после последнего бэкапа снимка нет
     NEVER = "never"  # бэкапа ещё не было, и это пока нормально
     OFF = "off"  # ящик выключен
 
@@ -46,6 +48,7 @@ HEALTH_LABELS = {
     Health.WARNING: "с ошибками",
     Health.FAILED: "сбой",
     Health.STALE: "просрочен",
+    Health.SNAPSHOT: "нет снимка",
     Health.NEVER: "ещё не было",
     Health.OFF: "выключен",
 }
@@ -62,8 +65,13 @@ class MailboxRow:
     health: Health = Health.NEVER
 
 
-def backup_health(box: Mailbox, last_real: Run | None, last_ok: Run | None, now: datetime) -> Health:
-    """Состояние по последнему настоящему бэкапу и последнему удачному."""
+def backup_health(box: Mailbox, last_real: Run | None, last_ok: Run | None, now: datetime,
+                  snapshots: bool = False) -> Health:
+    """Состояние по последнему настоящему бэкапу и последнему удачному.
+
+    snapshots — снимки restic включены: тогда бэкап без снимка — проблема
+    (удалённое на хостере не сохранится в истории).
+    """
     if not box.enabled:
         return Health.OFF
     if last_real is not None and last_real.status not in stats.DONE_OK:
@@ -74,6 +82,8 @@ def backup_health(box: Mailbox, last_real: Run | None, last_ok: Run | None, now:
         return Health.STALE if scheduled and box.created_at < now - STALE_AFTER else Health.NEVER
     if scheduled and last_ok.finished_at < now - STALE_AFTER:
         return Health.STALE
+    if snapshots and (last_ok.snapshot_error or not last_ok.snapshot_id):
+        return Health.SNAPSHOT
     return Health.WARNING if last_ok.status == RunStatus.WARNING else Health.OK
 
 
@@ -81,6 +91,7 @@ def mailbox_overview(session: Session) -> list[MailboxRow]:
     prefs = app_settings.load(session)
     now_local = datetime.now(prefs.tz)
     now = utcnow()
+    snapshots = snapshots_wanted(session)
     rows = []
     for box in session.scalars(select(Mailbox).order_by(Mailbox.name)):
         backups = select(Run).where(Run.mailbox_id == box.id, Run.kind == RunKind.BACKUP).order_by(Run.id.desc())
@@ -99,7 +110,7 @@ def mailbox_overview(session: Session) -> list[MailboxRow]:
         # next_slot отдаёт время в поясе админки; в шаблон — как наивный UTC, как всё остальное
         next_at = nxt.astimezone(timezone.utc).replace(tzinfo=None) if nxt else None
         rows.append(MailboxRow(box, last_run, last_ok, active, next_at,
-                               backup_health(box, last_real, last_ok, now)))
+                               backup_health(box, last_real, last_ok, now, snapshots)))
     return rows
 
 
@@ -124,6 +135,8 @@ def dashboard(request: Request, session: Session = Depends(get_session)):
         "active_runs": active_runs,
         "disk": disk_usage(),
         "worker_ok": worker_alive(session),
+        # Снимки включены, но restic не готов — бэкапы идут без истории
+        "restic_broken": app_settings.load_restic(session).enabled and not restic.ready(),
         "chart": stats.collect(session, app_settings.load(session).tz, OVERVIEW_DAYS),
     })
 
@@ -228,6 +241,7 @@ def system_page(request: Request, session: Session = Depends(get_session)):
         "MB_LOCAL_IMAP_HOST": settings.local_imap_host,
         "MB_LOCAL_IMAP_PORT": settings.local_imap_port,
         "MB_IMAPSYNC_BIN": settings.imapsync_bin,
+        "MB_RESTIC_BIN": settings.restic_bin,
     }
     return render(request, session, "system.html", {
         "env": env,
@@ -235,6 +249,8 @@ def system_page(request: Request, session: Session = Depends(get_session)):
         "backup_mounted": os.path.ismount(settings.backup_root),
         "imapsync_version": _version([settings.imapsync_bin, "--version"]),
         "dovecot_version": _version(["dovecot", "--version"]),
+        "restic_version": restic.version(),
+        "restic_ready": restic.ready(),
         "dovecot_ok": _port_open(settings.local_imap_host, settings.local_imap_port),
         "worker_ok": worker_alive(session),
     })

@@ -1,25 +1,28 @@
-"""Воркер: очередь запусков, расписание, отмена, очистка логов.
+"""Воркер: очередь запусков, расписание, отмена, очистка логов, обслуживание restic.
 
 Работает отдельным systemd-сервисом (mail-backup worker). Каждый запуск
-imapsync выполняется в своём потоке со своей сессией БД.
+imapsync выполняется в своём потоке со своей сессией БД; задачи restic
+(очистка, выгрузка, проверка) — по одной, в отдельном потоке.
 """
 
 import logging
 import os
+import shutil
 import signal
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import app_settings
+from . import app_settings, restic_tasks
 from .config import get_settings
 from .db import new_session
-from .jobs import active_run, enqueue_run, execute_run, forget_target_passwords
-from .models import Mailbox, Run, RunKind, RunStatus, RunTrigger, Setting, utcnow
+from .jobs import active_run, cleanup_unpacked, enqueue_run, execute_run, forget_target_passwords
+from .models import Mailbox, ResticTask, Run, RunKind, RunStatus, RunTrigger, Setting, utcnow
+from .schedule import latest_slot, parse_schedule
 
 log = logging.getLogger("mail_backup.worker")
 
@@ -34,43 +37,6 @@ SHUTDOWN_TIMEOUT = 30.0
 
 
 # --- Расписание -------------------------------------------------------------------------
-
-def parse_schedule(value: str | None) -> list[dtime]:
-    """«03:00, 15:30» → [03:00, 15:30]. Пустая строка — расписания нет."""
-    result = []
-    for part in (value or "").replace(";", ",").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            hours, minutes = part.split(":")
-            result.append(dtime(int(hours), int(minutes)))
-        except ValueError:
-            raise ValueError(f"Неверное время «{part}», нужен формат ЧЧ:ММ") from None
-    return sorted(set(result))
-
-
-def latest_slot(times: list[dtime], now_local: datetime) -> datetime | None:
-    """Последний наступивший момент расписания за сутки (с учётом вчерашнего дня)."""
-    candidates = [
-        datetime.combine(now_local.date() - timedelta(days=days_back), t, tzinfo=now_local.tzinfo)
-        for days_back in (0, 1)
-        for t in times
-    ]
-    passed = [c for c in candidates if c <= now_local]
-    return max(passed) if passed else None
-
-
-def next_slot(times: list[dtime], now_local: datetime) -> datetime | None:
-    """Ближайший будущий момент расписания (для отображения в панели)."""
-    candidates = [
-        datetime.combine(now_local.date() + timedelta(days=days), t, tzinfo=now_local.tzinfo)
-        for days in (0, 1)
-        for t in times
-    ]
-    upcoming = [c for c in candidates if c > now_local]
-    return min(upcoming) if upcoming else None
-
 
 def enqueue_due_backups(session: Session, prefs: app_settings.AppSettings, now: datetime | None = None) -> list[Run]:
     """Ставит в очередь бэкапы, чьё время по расписанию наступило."""
@@ -114,7 +80,8 @@ def cleanup_logs(retention_days: int) -> int:
         return 0
     border = time.time() - retention_days * 86400
     removed = 0
-    for path in logs_dir.glob("*/run_*.log"):
+    # run_<id>.log — запуски imapsync, restic_<id>.log — задачи restic
+    for path in logs_dir.glob("*/*.log"):
         if path.stat().st_mtime < border:
             path.unlink()
             removed += 1
@@ -148,16 +115,32 @@ class Worker:
         self.stop_event = threading.Event()
         self.last_cleanup = 0.0
         self.last_heartbeat = 0.0
+        # Задача restic, выполняющаяся сейчас: (id, поток)
+        self.task: tuple[int, threading.Thread] | None = None
+        self.task_killed = False
 
     def recover(self) -> None:
-        """После перезапуска воркера «зависшие» запуски помечаются сбоем."""
+        """После перезапуска воркера «зависшие» запуски и задачи помечаются сбоем."""
         with new_session() as session:
-            for run in session.scalars(select(Run).where(Run.status == RunStatus.RUNNING)):
-                run.status = RunStatus.FAILED
-                run.error_message = "Прервано: воркер был перезапущен"
-                run.finished_at = utcnow()
-                run.pid = None
+            for item in [*session.scalars(select(Run).where(Run.status == RunStatus.RUNNING)),
+                         *session.scalars(select(ResticTask).where(ResticTask.status == RunStatus.RUNNING))]:
+                item.status = RunStatus.FAILED
+                item.error_message = "Прервано: воркер был перезапущен"
+                item.finished_at = utcnow()
+                item.pid = None
+                if isinstance(item, Run):
+                    item.phase = None
             session.commit()
+            # Распакованные для восстановления снимки, оставшиеся от прерванных запусков
+            for run in session.scalars(select(Run).where(Run.snapshot_password_enc.is_not(None),
+                                                         Run.status != RunStatus.QUEUED)):
+                cleanup_unpacked(session, run)
+            queued = {run.temp_login for run in session.scalars(select(Run).where(Run.status == RunStatus.QUEUED))}
+        maildir_root = get_settings().maildir_root
+        if maildir_root.is_dir():
+            for path in maildir_root.glob("_restore_*"):
+                if path.name not in queued:
+                    shutil.rmtree(path, ignore_errors=True)
 
     def tick(self) -> None:
         # Завершившиеся потоки больше не занимают слоты
@@ -174,7 +157,9 @@ class Worker:
             prefs = app_settings.load(session)
             self.handle_cancels(session)
             enqueue_due_backups(session, prefs)
+            restic_tasks.enqueue_due(session, prefs, app_settings.load_restic(session))
             self.start_queued(session, prefs)
+            self.start_restic_task(session)
 
         if time.monotonic() - self.last_cleanup > CLEANUP_INTERVAL:
             self.last_cleanup = time.monotonic()
@@ -196,10 +181,49 @@ class Worker:
                 run.status = RunStatus.CANCELLED
                 run.finished_at = utcnow()
             elif run.pid and run.id not in self.killed:
-                log.info("Запуск #%s: отмена, завершаю imapsync (pid %s)", run.id, run.pid)
+                log.info("Запуск #%s: отмена, завершаю процесс (pid %s)", run.id, run.pid)
                 _kill(run.pid)
                 self.killed.add(run.id)
+        tasks = session.scalars(
+            select(ResticTask).where(ResticTask.cancel_requested.is_(True),
+                                     ResticTask.status.in_([RunStatus.QUEUED, RunStatus.RUNNING]))
+        )
+        running_id = self.task[0] if self.task else None
+        for task in tasks:
+            if task.status == RunStatus.QUEUED and task.id != running_id:
+                task.status = RunStatus.CANCELLED
+                task.finished_at = utcnow()
+            elif task.pid and task.id == running_id and not self.task_killed:
+                log.info("Задача restic #%s: отмена (pid %s)", task.id, task.pid)
+                _kill(task.pid)
+                self.task_killed = True
         session.commit()
+
+    def start_restic_task(self, session: Session) -> None:
+        """Задачи restic — строго по одной: выгрузка и очистка долгие и тяжёлые."""
+        if self.task and self.task[1].is_alive():
+            return
+        self.task = None
+        task = session.scalars(
+            select(ResticTask)
+            .where(ResticTask.status == RunStatus.QUEUED, ResticTask.cancel_requested.is_(False))
+            .order_by(ResticTask.id)
+            .limit(1)
+        ).first()
+        if task is None:
+            return
+        thread = threading.Thread(target=self._execute_task, args=(task.id,), name=f"restic-{task.id}", daemon=True)
+        self.task, self.task_killed = (task.id, thread), False
+        log.info("Задача restic #%s: старт (%s)", task.id, task.kind)
+        thread.start()
+
+    def _execute_task(self, task_id: int) -> None:
+        try:
+            with new_session() as session:
+                task = restic_tasks.execute_task(session, task_id)
+                log.info("Задача restic #%s: %s %s", task_id, task.status, task.error_message or "")
+        except Exception:
+            log.exception("Задача restic #%s: необработанная ошибка", task_id)
 
     def start_queued(self, session: Session, prefs: app_settings.AppSettings) -> None:
         free = prefs.max_parallel_jobs - len(self.active)
@@ -234,16 +258,21 @@ class Worker:
             log.exception("Запуск #%s: необработанная ошибка", run_id)
 
     def shutdown(self) -> None:
-        if not self.active:
+        threads = [a.thread for a in self.active.values()]
+        if self.task and self.task[1].is_alive():
+            threads.append(self.task[1])
+        if not threads:
             return
-        log.info("Остановка: завершаю %s запуск(ов) imapsync", len(self.active))
+        log.info("Остановка: завершаю запусков и задач: %s", len(threads))
         with new_session() as session:
             for run in session.scalars(select(Run).where(Run.id.in_(list(self.active)))):
                 if run.pid:
                     _kill(run.pid)
+            if self.task and (task := session.get(ResticTask, self.task[0])) and task.pid:
+                _kill(task.pid)
         deadline = time.monotonic() + SHUTDOWN_TIMEOUT
-        for active in self.active.values():
-            active.thread.join(max(0.0, deadline - time.monotonic()))
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
 
     def run_forever(self) -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):

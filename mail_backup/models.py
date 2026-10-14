@@ -135,6 +135,81 @@ class Run(Base):
     # Размеры папок источника, JSON: [{"name", "size", "messages", "biggest"}, ...]
     folder_stats: Mapped[str | None] = mapped_column(Text)
 
+    # Что сейчас делает запуск, кроме imapsync: snapshot — снимок restic,
+    # unpack — распаковка снимка для восстановления (см. RunPhase)
+    phase: Mapped[str | None] = mapped_column(String(20))
+    # Снимок restic после бэкапа: id, сколько добавилось в репозиторий (сжато), ошибка
+    snapshot_id: Mapped[str | None] = mapped_column(String(64))
+    snapshot_added: Mapped[int | None]
+    snapshot_error: Mapped[str | None] = mapped_column(Text)
+    # Восстановление из снимка: какой снимок и на какой момент; пароль временной
+    # учётки Dovecot, куда снимок распаковывается (стирается после запуска)
+    source_snapshot: Mapped[str | None] = mapped_column(String(64))
+    source_snapshot_time: Mapped[datetime | None]
+    snapshot_password_enc: Mapped[str | None] = mapped_column(Text)
+
+    @property
+    def temp_login(self) -> str:
+        """Временная учётка Dovecot для восстановления из снимка.
+
+        Начинается с «_» — такие логины у ящиков запрещены (dovecot.new_local_credentials).
+        """
+        return f"_restore_{self.id}"
+
+
+class RunPhase(StrEnum):
+    SNAPSHOT = "snapshot"  # restic backup зеркала
+    UNPACK = "unpack"  # restic restore снимка во временную учётку
+
+
+class ResticRemote(Base):
+    """Удалённый сервер (SFTP), куда копируются снимки restic."""
+
+    __tablename__ = "restic_remotes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100))
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(default=22)
+    user: Mapped[str] = mapped_column(String(100))
+    # Каталог репозитория на сервере: абсолютный или относительно домашнего
+    path: Mapped[str] = mapped_column(String(500))
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+    @property
+    def url(self) -> str:
+        # sftp://user@host:port//abs — двойная косая черта означает абсолютный путь
+        host = f"[{self.host}]" if ":" in self.host else self.host
+        return f"sftp://{self.user}@{host}:{self.port}/{self.path}"
+
+
+class ResticTaskKind(StrEnum):
+    PRUNE = "prune"  # срок хранения и очистка локального репозитория
+    COPY = "copy"  # выгрузка снимков на удалённый сервер (+ его очистка)
+    CHECK = "check"  # проверка целостности репозитория
+
+
+class ResticTask(Base):
+    """Обслуживание restic: очистка, выгрузка, проверка. Выполняет воркер по одной."""
+
+    __tablename__ = "restic_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[ResticTaskKind] = mapped_column(String(20))
+    # Удалённый сервер для выгрузки и проверки; пусто — локальный репозиторий
+    remote_id: Mapped[int | None] = mapped_column(ForeignKey("restic_remotes.id", ondelete="SET NULL"), index=True)
+    remote: Mapped[ResticRemote | None] = relationship()
+    trigger: Mapped[RunTrigger] = mapped_column(String(20), default=RunTrigger.MANUAL)
+    status: Mapped[RunStatus] = mapped_column(String(20), default=RunStatus.QUEUED, index=True)
+    cancel_requested: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+    pid: Mapped[int | None]
+    log_path: Mapped[str | None] = mapped_column(String(500))
+    error_message: Mapped[str | None] = mapped_column(Text)
+
 
 class Setting(Base):
     """Глобальные настройки ключ–значение (в т.ч. хеш пароля админа)."""

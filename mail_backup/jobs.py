@@ -3,18 +3,20 @@
 import ipaddress
 import json
 import os
+import secrets
+import shutil
 import time
 from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from . import crypto, dovecot
+from . import app_settings, crypto, dovecot, restic
 from .config import get_settings
 from .imapsync.command import Endpoint, Job
 from .imapsync.parser import Progress, status_from_exit
 from .imapsync.runner import run_imapsync
-from .models import Mailbox, Run, RunKind, RunStatus, RunTrigger, utcnow
+from .models import Mailbox, Run, RunKind, RunPhase, RunStatus, RunTrigger, utcnow
 from .providers import Security, get_provider
 
 # Не чаще раза в N секунд пишем прогресс в БД, чтобы не нагружать SQLite
@@ -23,6 +25,8 @@ PROGRESS_SAVE_INTERVAL = 2.0
 TARGET_PASSWORD_TTL = timedelta(hours=24)
 # Удачным считается и запуск с ошибками по отдельным письмам
 DONE_OK = (RunStatus.SUCCESS, RunStatus.WARNING)
+# Запас места при распаковке снимка: Dovecot допишет индексы
+UNPACK_SPACE_RESERVE = 1.1
 
 
 class StorageNotMountedError(RuntimeError):
@@ -68,6 +72,15 @@ def is_local_host(host: str) -> bool:
     return addr.is_loopback or addr.is_unspecified
 
 
+def snapshot_endpoint(run: Run) -> Endpoint:
+    """Временная учётка Dovecot, куда распакован снимок для восстановления."""
+    if not run.snapshot_password_enc:
+        raise ValueError("Снимок не распакован — нет временной учётки")
+    settings = get_settings()
+    return Endpoint(settings.local_imap_host, settings.local_imap_port, Security.PLAIN,
+                    run.temp_login, crypto.decrypt(run.snapshot_password_enc))
+
+
 def run_target_endpoint(run: Run) -> Endpoint:
     if not (run.target_host and run.target_login):
         raise ValueError("Для восстановления и переноса нужен ящик-получатель")
@@ -85,7 +98,7 @@ def run_target_endpoint(run: Run) -> Endpoint:
     )
 
 
-def build_job(run: Run, *, just_login: bool = False) -> Job:
+def build_job(run: Run, *, just_login: bool = False, mirror_deletions: bool = True) -> Job:
     box = run.mailbox
     match run.kind:
         case RunKind.BACKUP | RunKind.ESTIMATE:
@@ -93,8 +106,9 @@ def build_job(run: Run, *, just_login: bool = False) -> Job:
             source, target = mailbox_endpoint(box), local_endpoint(box)
             extra = list(get_provider(box.provider).extra_args_source)
         case RunKind.RESTORE:
-            source, target = local_endpoint(box), run_target_endpoint(run)
-            extra = []
+            # Из зеркала (последний бэкап) или из распакованного снимка на дату
+            source = snapshot_endpoint(run) if run.source_snapshot else local_endpoint(box)
+            target, extra = run_target_endpoint(run), []
         case RunKind.MIGRATE:
             source, target = mailbox_endpoint(box), run_target_endpoint(run)
             extra = list(get_provider(box.provider).extra_args_source)
@@ -109,8 +123,75 @@ def build_job(run: Run, *, just_login: bool = False) -> Job:
         just_login=just_login,
         exclude_folders=box.exclude_folders,
         subfolder2=run.target_subfolder if transfer else None,
+        mirror_deletions=mirror_deletions,
         extra_args=extra,
     )
+
+
+# --- Снимки restic ----------------------------------------------------------------------
+
+def snapshots_wanted(session: Session) -> bool:
+    """Снимки включены в панели и restic готов (установлен, репозиторий создан)."""
+    return app_settings.load_restic(session).enabled and restic.ready()
+
+
+def mailbox_maildir(box: Mailbox):
+    return get_settings().maildir_root / box.local_login
+
+
+def _has_snapshot(box: Mailbox) -> bool:
+    try:
+        return bool(restic.snapshots(restic.local_repo(), box.id))
+    except restic.ResticError:
+        # Не смогли проверить — считаем, что снимка нет: лишний снимок безопаснее
+        return False
+
+
+def _take_snapshot(session: Session, run: Run, log_path, on_start) -> restic.BackupSummary:
+    """Снимок зеркала ящика (и срок хранения), запуск при этом в фазе «снимок»."""
+    box = run.mailbox
+    run.phase = RunPhase.SNAPSHOT
+    session.commit()
+    try:
+        summary = restic.backup(mailbox_maildir(box), box.id, log_path, on_start)
+        if box.retention_days:
+            restic.forget(restic.local_repo(), box.id, box.retention_days, log_path, on_start)
+        return summary
+    finally:
+        run.phase = None
+        run.pid = None
+        session.commit()
+
+
+def _unpack_snapshot(session: Session, run: Run, log_path, on_start) -> None:
+    """Распаковывает снимок во временную учётку Dovecot для восстановления."""
+    settings = get_settings()
+    found = restic.snapshots(restic.local_repo(), snapshot_id=run.source_snapshot)
+    if not found or found[0].mailbox_id != run.mailbox_id:
+        raise ValueError(f"Снимок {run.source_snapshot[:8]} не найден (удалён по сроку хранения?)")
+    snap = found[0]
+    target = settings.maildir_root / run.temp_login
+    settings.maildir_root.mkdir(parents=True, exist_ok=True)
+    if snap.size and shutil.disk_usage(settings.maildir_root).free < snap.size * UNPACK_SPACE_RESERVE:
+        raise ValueError(f"Не хватает места на диске бэкапов для распаковки снимка ({snap.size} байт)")
+    shutil.rmtree(target, ignore_errors=True)
+    run.phase = RunPhase.UNPACK
+    run.snapshot_password_enc = crypto.encrypt(secrets.token_urlsafe(24))
+    session.commit()
+    restic.restore(snap.id, snap.paths[0], target, log_path, on_start)
+    run.phase = None
+    run.pid = None
+    session.commit()
+    dovecot.sync_users(session)
+
+
+def cleanup_unpacked(session: Session, run: Run) -> None:
+    """Удаляет распакованный снимок и временную учётку."""
+    shutil.rmtree(get_settings().maildir_root / run.temp_login, ignore_errors=True)
+    if run.snapshot_password_enc:
+        run.snapshot_password_enc = None
+        session.commit()
+        dovecot.sync_users(session)
 
 
 def last_backup(session: Session, mailbox_id: int) -> Run | None:
@@ -181,12 +262,30 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
         run.progress_done, run.progress_total, run.eta_seconds = p.done, p.msgs_total, p.eta_seconds
         session.commit()
 
+    # История в снимках restic: только с ней зеркало удаляет то, что удалено на хостере
+    history = run.kind == RunKind.BACKUP and snapshots_wanted(session)
+    snapshot = history and not run.dry_run and not just_login
     try:
         if run.kind in (RunKind.BACKUP, RunKind.RESTORE, RunKind.ESTIMATE):
             check_backup_storage()
             # Учётка ящика в Dovecot должна существовать до подключения к нему
             dovecot.sync_users(session)
-        job = build_job(run, just_login=just_login)
+        if snapshot and mailbox_maildir(run.mailbox).is_dir() and not _has_snapshot(run.mailbox):
+            # Первый снимок ящика — до зеркалирования: в зеркале могут быть письма,
+            # которые копились, пока снимки были выключены, а --delete2 их удалит
+            try:
+                _take_snapshot(session, run, log_path, on_start)
+            except restic.ResticError as exc:
+                session.refresh(run, ["cancel_requested"])
+                if run.cancel_requested:
+                    raise
+                history = False
+                run.snapshot_error = (f"Снимок перед зеркалированием не создан ({exc}); "
+                                      "удалённое на хостере в этот раз из бэкапа не удалялось")
+                session.commit()
+        if run.source_snapshot:
+            _unpack_snapshot(session, run, log_path, on_start)
+        job = build_job(run, just_login=just_login, mirror_deletions=history)
         result = run_imapsync(
             job,
             imapsync_bin=settings.imapsync_bin,
@@ -197,8 +296,11 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
         )
     except Exception as exc:
         session.rollback()
-        run.status = RunStatus.FAILED
-        run.error_message = f"{type(exc).__name__}: {exc}"
+        # Отмена во время снимка или распаковки тоже приходит сюда — ошибкой restic
+        session.refresh(run, ["cancel_requested"])
+        run.status = RunStatus.CANCELLED if run.cancel_requested else RunStatus.FAILED
+        run.error_message = None if run.cancel_requested else f"{type(exc).__name__}: {exc}"
+        run.phase = None
     else:
         # Флаг отмены ставит веб-панель из другого процесса — перечитываем из БД
         session.refresh(run, ["cancel_requested"])
@@ -212,6 +314,20 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
             run.progress_done = result.last_progress.done
             run.progress_total = result.last_progress.msgs_total
         run.eta_seconds = None
+        run.pid = None
+        if snapshot and run.status in DONE_OK:
+            try:
+                summary = _take_snapshot(session, run, log_path, on_start)
+            except restic.ResticError as exc:
+                session.refresh(run, ["cancel_requested"])
+                run.snapshot_error = "Снимок отменён" if run.cancel_requested else str(exc)
+            else:
+                run.snapshot_id, run.snapshot_added = summary.snapshot_id, summary.added
+                run.snapshot_error = ("Снимок создан, но часть файлов прочитать не удалось — см. лог"
+                                      if summary.incomplete else None)
+    finally:
+        if run.source_snapshot:
+            cleanup_unpacked(session, run)
     if run.dry_run and run.status in DONE_OK and run.messages_planned is None:
         run.messages_planned = 0
     # Чужой пароль не храним дольше нужного; после пробного он ещё нужен для повтора

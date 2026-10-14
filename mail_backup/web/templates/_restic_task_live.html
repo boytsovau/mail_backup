@@ -1,0 +1,26 @@
+{% from "_macros.html" import status, csrf with context %}
+{% set active = task.status in ('queued', 'running') %}
+{# Пока задача активна, фрагмент сам себя перезапрашивает #}
+<div id="task-live" {% if active %}hx-get="/restic/tasks/{{ task.id }}/live" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+  <div class="run-head">
+    {{ status(task) }}
+    <span class="muted">{{ TRIGGER_LABELS[task.trigger] }}</span>
+    {% if active and not task.cancel_requested %}
+      <form method="post" action="/restic/tasks/{{ task.id }}/cancel" class="inline" data-confirm="Остановить задачу #{{ task.id }}?">
+        {{ csrf() }}<button class="small danger">Отменить</button>
+      </form>
+    {% elif active %}<span class="muted">останавливается…</span>{% endif %}
+  </div>
+  {% if task.status == 'queued' %}<p class="muted">Ждёт очереди: задачи restic выполняются по одной.</p>{% endif %}
+  {% if task.error_message %}<div class="flash flash-error">{{ task.error_message }}</div>{% endif %}
+  <dl class="facts">
+    <dt>Репозиторий</dt><dd>{% if task.remote %}<code>{{ task.remote.url }}</code>{% elif task.kind == 'copy' %}сервер удалён из панели{% else %}локальный{% endif %}</dd>
+    <dt>Создана</dt><dd>{{ dt(task.created_at) }}</dd>
+    <dt>Начата</dt><dd>{{ dt(task.started_at) }}</dd>
+    <dt>Завершена</dt><dd>{{ dt(task.finished_at) }}</dd>
+  </dl>
+  {% if log %}
+    <h2>Лог restic</h2>
+    <pre class="log">{{ log }}</pre>
+  {% endif %}
+</div>

@@ -37,6 +37,28 @@
         {% endif %}
       </p>
       <label class="check">
+        <input type="radio" name="mode" value="snapshot" {{ 'checked' if form.mode == 'snapshot' }} {{ 'disabled' if not snapshots }}>
+        Восстановить из снимка на дату
+      </label>
+      <p class="hint">
+        {% if snapshots %}
+          Снимков: {{ snapshots | length }}, с {{ dt(snapshots[-1].time) }}. В снимке есть и письма, которые потом
+          удалили на хостере. Снимок распаковывается во временное хранилище на этом сервере и удаляется после запуска.
+        {% elif snap_error %}
+          <span class="text-error">Снимки недоступны: {{ snap_error }}</span>
+        {% else %}
+          Снимков нет — они появляются после бэкапов, когда <a href="/restic">снимки restic</a> включены.
+        {% endif %}
+      </p>
+      <label data-show-if="mode:snapshot">Снимок
+        <select name="snapshot">
+          {% for snap in snapshots %}
+            <option value="{{ snap.id }}" {{ 'selected' if snap.id == form.snapshot }}>{{ dt(snap.time) }}{% if snap.size %} · {{ snap.size | size }}{% endif %} · {{ snap.short_id }}</option>
+          {% endfor %}
+        </select>
+        {{ field_error(errors, 'snapshot') }}
+      </label>
+      <label class="check">
         <input type="radio" name="mode" value="migrate" {{ 'checked' if form.mode == 'migrate' }}>
         Перенести напрямую с хостера ({{ box.login }} на {{ box.host }})
       </label>
@@ -46,7 +68,7 @@
 
     <fieldset>
       <legend>2. Куда</legend>
-      <label class="check" data-show-if="mode:restore">
+      <label class="check" data-show-if="mode:restore|snapshot">
         <input type="radio" name="target" value="same" {{ 'checked' if form.target == 'same' }}>
         В этот же ящик ({{ box.login }}, сохранённый пароль)
       </label>

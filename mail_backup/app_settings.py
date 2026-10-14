@@ -3,7 +3,7 @@
 Базовые пути и режим развёртывания — в env-файле (config.py), всё остальное — здесь.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy.orm import Session
@@ -25,17 +25,51 @@ class AppSettings:
         return ZoneInfo(self.timezone)
 
 
-# Префикс ключей в таблице settings, чтобы не пересекаться со служебными
+@dataclass(frozen=True)
+class ResticSettings:
+    """Снимки restic (страница «Снимки»)."""
+
+    # Выключено — снимков, очистки и выгрузки нет, а зеркало не удаляет письма,
+    # удалённые на хостере (иначе без истории их было бы не вернуть)
+    enabled: bool = True
+    # Ежедневная очистка по сроку хранения и выгрузка на удалённые серверы, «ЧЧ:ММ[, ЧЧ:ММ]»
+    schedule: str = "05:00"
+
+
+# Префиксы ключей в таблице settings, чтобы не пересекаться со служебными
 _PREFIX = "app."
+_RESTIC_PREFIX = "restic."
+
+
+def _load(session: Session, cls, prefix: str):
+    values = {}
+    for f in fields(cls):
+        row = session.get(Setting, prefix + f.name)
+        if row is None:
+            continue
+        # bool("False") — истина, поэтому логические значения разбираем сами
+        values[f.name] = row.value == "True" if f.type is bool else f.type(row.value)
+    return cls(**values)
+
+
+def _save(session: Session, obj, prefix: str) -> None:
+    for f in fields(obj):
+        session.merge(Setting(key=prefix + f.name, value=str(getattr(obj, f.name))))
+    session.commit()
 
 
 def load(session: Session) -> AppSettings:
-    values = {}
-    for name, default in AppSettings().__dict__.items():
-        row = session.get(Setting, _PREFIX + name)
-        if row is not None:
-            values[name] = type(default)(row.value)
-    return AppSettings(**values)
+    return _load(session, AppSettings, _PREFIX)
+
+
+def load_restic(session: Session) -> ResticSettings:
+    return _load(session, ResticSettings, _RESTIC_PREFIX)
+
+
+def save_restic(session: Session, settings: ResticSettings, **changes) -> ResticSettings:
+    settings = replace(settings, **changes)
+    _save(session, settings, _RESTIC_PREFIX)
+    return settings
 
 
 def validate(max_parallel_jobs: int, timezone: str, log_retention_days: int) -> AppSettings:
@@ -52,6 +86,4 @@ def validate(max_parallel_jobs: int, timezone: str, log_retention_days: int) -> 
 
 
 def save(session: Session, settings: AppSettings) -> None:
-    for name, value in settings.__dict__.items():
-        session.merge(Setting(key=_PREFIX + name, value=str(value)))
-    session.commit()
+    _save(session, settings, _PREFIX)

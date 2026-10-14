@@ -375,3 +375,109 @@ def test_dashboard_shows_stale_backup(logged_in):
     page = logged_in.get("/")
     assert "Требуют внимания" in page.text and "просрочен" in page.text
     assert 'id="overview-chart"' in page.text
+
+
+def test_restic_page_toggle_and_settings(logged_in):
+    page = logged_in.get("/restic")
+    assert page.status_code == 200 and "restic не установлен" in page.text and "включены" in page.text
+    token = csrf(logged_in)
+    r = logged_in.post("/restic/toggle", data={"csrf_token": token, "enabled": "0"}, follow_redirects=False)
+    assert r.status_code == 303
+    with new_session() as session:
+        assert app_settings.load_restic(session).enabled is False
+    assert "зеркало <strong>не удаляет</strong>" in logged_in.get("/restic").text
+
+    logged_in.post("/restic/settings", data={"csrf_token": token, "schedule": "4:30, 23:00"})
+    with new_session() as session:
+        assert app_settings.load_restic(session).schedule == "04:30, 23:00"
+    r = logged_in.post("/restic/settings", data={"csrf_token": token, "schedule": "25:00"})
+    assert "Неверное время" in r.text
+
+
+def test_restic_password_only_on_request(logged_in):
+    from mail_backup.config import get_settings
+
+    password = get_settings().restic_password_file.read_text().strip()
+    assert password not in logged_in.get("/restic").text
+    r = logged_in.post("/restic/password", data={"csrf_token": csrf(logged_in)})
+    assert password in r.text and "Сохраните пароль" in r.text
+
+
+def test_restic_remotes(logged_in, fake_restic):
+    token = csrf(logged_in)
+    bad = logged_in.post("/restic/remotes", data={"csrf_token": token, "host": "bad host", "port": "0",
+                                                   "user": "-x", "path": "../etc"})
+    assert bad.status_code == 400 and "Порт" in bad.text and "без пробелов" in bad.text
+
+    r = logged_in.post("/restic/remotes", data={"csrf_token": token, "name": "", "host": "backup.example.com",
+                                                 "port": "2222", "user": "mb", "path": "/srv/restic/"},
+                       follow_redirects=False)
+    assert r.status_code == 303
+    with new_session() as session:
+        remote = session.query(models.ResticRemote).one()
+        assert (remote.name, remote.path, remote.enabled) == ("backup.example.com", "/srv/restic", True)
+        remote_id = remote.id
+    # Без ключа проверка сразу просит его создать
+    check = logged_in.post(f"/restic/remotes/{remote_id}/check", headers={"X-CSRF-Token": token})
+    assert "SSH-ключ" in check.text
+
+    logged_in.post("/restic/ssh-key", data={"csrf_token": token})
+    page = logged_in.get("/restic")
+    assert "ssh-ed25519 " in page.text and "sftp://mb@backup.example.com:2222//srv/restic" in page.text
+    check = logged_in.post(f"/restic/remotes/{remote_id}/check", headers={"X-CSRF-Token": token})
+    assert "будет создан при первой выгрузке" in check.text
+
+    r = logged_in.post(f"/restic/remotes/{remote_id}/upload", data={"csrf_token": token}, follow_redirects=False)
+    task_url = r.headers["location"]
+    assert "Выгрузка" in logged_in.get(task_url).text
+    # Пока выгрузка в очереди, сервер не удаляется; отменённую — можно
+    logged_in.post(f"/restic/remotes/{remote_id}/delete", data={"csrf_token": token})
+    logged_in.post(task_url + "/cancel", data={"csrf_token": token})
+    with new_session() as session:
+        assert session.query(models.ResticTask).one().cancel_requested
+        session.query(models.ResticTask).update({"status": RunStatus.CANCELLED})
+        session.commit()
+    logged_in.post(f"/restic/remotes/{remote_id}/delete", data={"csrf_token": token})
+    with new_session() as session:
+        assert session.query(models.ResticRemote).count() == 0
+
+
+def test_transfer_from_snapshot(logged_in, fake_restic):
+    from mail_backup import restic
+
+    restic.init_local()
+    with new_session() as session:
+        box = add_mailbox(session)
+        box_id = box.id
+    snap_path = "/srv/mail_backup/maildir/user@yandex.ru"
+    restic.run_short(restic.local_repo(), ["backup", snap_path, "--tag", f"mailbox-{box_id}"])
+    snap = restic.snapshots(restic.local_repo(), box_id)[0]
+
+    page = logged_in.get(f"/mailboxes/{box_id}/transfer?mode=snapshot")
+    assert 'value="snapshot" checked' in page.text and snap.short_id in page.text
+    data = {"csrf_token": csrf(logged_in), "mode": "snapshot", "snapshot": "нет-такого", "target": "same",
+            "placement": "as_is", "action": "dry"}
+    assert "Выберите снимок" in logged_in.post(f"/mailboxes/{box_id}/transfer", data=data).text
+
+    data["snapshot"] = snap.id
+    r = logged_in.post(f"/mailboxes/{box_id}/transfer", data=data, follow_redirects=False)
+    assert r.status_code == 303
+    with new_session() as session:
+        run = session.query(Run).one()
+        assert run.kind == "restore" and run.source_snapshot == snap.id and run.dry_run
+        assert run.source_snapshot_time == snap.time and run.target_login == "user@yandex.ru"
+    assert "снимок restic от" in logged_in.get(r.headers["location"]).text
+
+
+def test_dashboard_warns_about_missing_snapshot(logged_in, fake_restic):
+    from mail_backup import restic
+
+    restic.init_local()
+    with new_session() as session:
+        box = add_mailbox(session)
+        session.add(Run(kind="backup", mailbox_id=box.id, status=RunStatus.SUCCESS, finished_at=models.utcnow(),
+                        snapshot_error="restic: репозиторий заблокирован"))
+        session.commit()
+    page = logged_in.get("/")
+    assert "нет снимка" in page.text and "репозиторий заблокирован" in page.text
+    assert "restic" in logged_in.get("/system").text

@@ -12,12 +12,12 @@ document.addEventListener("submit", (event) => {
 });
 
 // Условные части формы: <div data-show-if="имя:значение"> видна, только когда
-// выбран переключатель name="имя" со значением «значение»
+// выбран переключатель name="имя" со значением «значение» (несколько — через «|»)
 function updateConditional(form) {
   form.querySelectorAll("[data-show-if]").forEach((el) => {
-    const [name, value] = el.dataset.showIf.split(":");
+    const [name, values] = el.dataset.showIf.split(":");
     const checked = form.querySelector(`input[name="${name}"]:checked`);
-    el.hidden = !checked || checked.value !== value;
+    el.hidden = !checked || !values.split("|").includes(checked.value);
     // Скрытый переключатель не должен оставаться выбранным — выбираем первый видимый
     el.querySelectorAll("input[type=radio]:checked").forEach((radio) => {
       if (!el.hidden) return;

@@ -99,7 +99,9 @@ check_backup_disk() {
 }
 
 # --- Пакеты -------------------------------------------------------------------------
-BASE_PACKAGES=(git curl ca-certificates openssl python3 python3-venv dovecot-imapd nginx)
+# restic — снимки и выгрузка (нужен ≥ 0.16); openssh-client — ssh/ssh-keygen для выгрузки по SFTP
+BASE_PACKAGES=(git curl ca-certificates openssl python3 python3-venv dovecot-imapd nginx restic openssh-client)
+RESTIC_MIN_VERSION=0.16
 
 # Зависимости imapsync — из официальной инструкции imapsync для Ubuntu
 IMAPSYNC_PERL_PACKAGES=(
@@ -158,6 +160,17 @@ install_imapsync() {
         die "imapsync не запускается (не хватает модулей Perl?):
 $out"
     log "imapsync $out"
+}
+
+check_restic() {
+    local ver
+    ver=$(restic version 2>/dev/null | awk '{print $2}')
+    [[ -n $ver ]] || die "restic не установился (apt install restic)"
+    if [[ $(printf '%s\n%s\n' "$RESTIC_MIN_VERSION" "$ver" | sort -V | head -1) != "$RESTIC_MIN_VERSION" ]]; then
+        warn "restic $ver старее $RESTIC_MIN_VERSION — снимки работать не будут, обновите restic"
+    else
+        log "restic $ver"
+    fi
 }
 
 # --- Пользователь, каталоги, приложение --------------------------------------------
@@ -363,6 +376,7 @@ check_existing_env
 check_backup_disk
 install_packages
 install_imapsync
+check_restic
 setup_user_and_dirs
 write_env_file
 install_app

@@ -2,17 +2,18 @@
 
 import argparse
 import getpass
+import os
 import shutil
 import subprocess
 import sys
 
 from sqlalchemy import select
 
-from . import auth, crypto, dovecot
+from . import auth, crypto, dovecot, restic
 from .config import get_settings
 from .crypto import ensure_keys
 from .db import create_tables, new_session
-from .jobs import execute_run
+from .jobs import check_backup_storage, execute_run
 from .models import Mailbox, Run, RunKind, RunTrigger
 from .providers import PROVIDERS, Security, get_provider
 
@@ -28,10 +29,26 @@ def cmd_init(_args: argparse.Namespace) -> None:
         settings.dovecot_users_file.parent,
     ):
         path.mkdir(parents=True, exist_ok=True)
+    settings.ssh_dir.mkdir(mode=0o700, exist_ok=True)
     ensure_keys()
     create_tables()
     print(f"БД: {settings.db_path}")
     print(f"Хранилище бэкапов: {settings.maildir_root}")
+    _init_restic()
+
+
+def _init_restic() -> None:
+    """Локальный репозиторий restic на диске бэкапов (если restic установлен)."""
+    ver = restic.version()
+    if ver is None:
+        print("restic не установлен — снимки работать не будут")
+        return
+    if not restic.version_ok(ver):
+        print(f"restic {ver} слишком старый, нужен ≥ {'.'.join(map(str, restic.MIN_VERSION))}")
+        return
+    check_backup_storage()
+    created = restic.init_local()
+    print(f"Репозиторий restic: {get_settings().restic_repo}" + (" (создан)" if created else ""))
 
 
 def cmd_setup_link(args: argparse.Namespace) -> None:
@@ -74,6 +91,9 @@ def cmd_check(_args: argparse.Namespace) -> None:
         sys.exit(f"imapsync не найден: {settings.imapsync_bin}")
     version = subprocess.run([binary, "--version"], capture_output=True, text=True).stdout.strip()
     print(f"imapsync:           {binary} (версия {version})")
+    ver = restic.version()
+    state = "репозиторий готов" if restic.ready() else "репозиторий не создан — mail-backup init"
+    print(f"restic:             {ver or 'не установлен'}" + (f", {state}" if ver else ""))
 
 
 def cmd_mailbox_add(args: argparse.Namespace) -> None:
@@ -136,6 +156,15 @@ def cmd_backup(args: argparse.Namespace) -> None:
             )
 
 
+def cmd_restic(args: argparse.Namespace) -> None:
+    """restic с локальным репозиторием и паролем приложения — для диагностики."""
+    binary = restic.binary()
+    if binary is None:
+        sys.exit("restic не установлен")
+    os.environ.update(restic.env())
+    os.execv(binary, [binary, *restic.local_repo().args(), *args.restic_args])
+
+
 def cmd_dovecot_sync(_args: argparse.Namespace) -> None:
     with new_session() as session:
         count = dovecot.sync_users(session)
@@ -180,6 +209,10 @@ def main() -> None:
     p.set_defaults(func=cmd_backup)
 
     sub.add_parser("dovecot-sync", help="пересобрать файл учёток Dovecot").set_defaults(func=cmd_dovecot_sync)
+
+    p = sub.add_parser("restic", help="restic с локальным репозиторием (например: restic snapshots)")
+    p.add_argument("restic_args", nargs=argparse.REMAINDER, help="аргументы restic")
+    p.set_defaults(func=cmd_restic)
 
     args = parser.parse_args()
     args.func(args)
