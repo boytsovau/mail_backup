@@ -5,6 +5,7 @@
 
 import os
 import shutil
+import signal
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,6 +13,10 @@ from pathlib import Path
 
 from .command import Job, build_command
 from .parser import OutputParser, Progress, Stats
+
+
+# Сколько ждать imapsync после SIGTERM, прежде чем добить SIGKILL
+TERMINATE_TIMEOUT = 30
 
 
 @dataclass
@@ -25,6 +30,20 @@ def _write_passfile(path: Path, password: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(password + "\n")
+
+
+def _terminate(proc: subprocess.Popen) -> None:
+    """Завершает imapsync со всей его группой процессов и ждёт выхода."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            break
+        try:
+            proc.wait(TERMINATE_TIMEOUT)
+            break
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def run_imapsync(
@@ -73,14 +92,19 @@ def run_imapsync(
                 # Своя группа процессов: при отмене можно убить imapsync целиком
                 start_new_session=True,
             )
-            if on_start:
-                on_start(proc.pid)
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                log.write(line)
-                progress = parser.feed(line)
-                if progress and on_progress:
-                    on_progress(progress)
+            try:
+                if on_start:
+                    on_start(proc.pid)
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    log.write(line)
+                    progress = parser.feed(line)
+                    if progress and on_progress:
+                        on_progress(progress)
+            except BaseException:
+                # Воркер перестал читать вывод — imapsync не должен работать без присмотра
+                _terminate(proc)
+                raise
             exit_code = proc.wait()
             log.write(f"\n# код выхода imapsync: {exit_code}\n")
 
