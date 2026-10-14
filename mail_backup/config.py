@@ -50,6 +50,12 @@ class Settings(BaseSettings):
         return self.backup_root / "maildir"
 
     @property
+    def dovecot_users_file(self) -> Path:
+        # Каталог создаёт установщик с группой dovecot и setgid-битом,
+        # чтобы Dovecot мог читать файл, а приложение — перезаписывать
+        return self.data_dir / "dovecot" / "users"
+
+    @property
     def fernet_key_file(self) -> Path:
         return self.secrets_dir / "secret.key"
 
