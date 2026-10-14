@@ -1,7 +1,7 @@
 """Настройки приложения.
 
 Значения берутся из переменных окружения с префиксом MB_, из файла
-/etc/mail_backup/mail_backup.env (сервер) и из .env (разработка).
+/etc/mail_backup/mail_backup.env (сервер) и из .env в корне проекта (разработка).
 """
 
 from functools import lru_cache
@@ -9,12 +9,16 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# .env ищем в корне проекта, а не в текущем каталоге: команды на сервере
+# запускаются через sudo -u из любого места, в т.ч. из недоступного /root
+PROJECT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MB_",
         # Более поздний файл имеет приоритет: .env перекрывает серверный
-        env_file=("/etc/mail_backup/mail_backup.env", ".env"),
+        env_file=("/etc/mail_backup/mail_backup.env", PROJECT_ENV_FILE),
         extra="ignore",
     )
 
