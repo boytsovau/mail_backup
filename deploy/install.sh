@@ -206,8 +206,15 @@ EOF
 
 # --- Dovecot ------------------------------------------------------------------------------
 configure_dovecot() {
-    log "Настройка Dovecot"
-    local conf=/etc/dovecot/dovecot.conf tmp
+    local conf=/etc/dovecot/dovecot.conf tmp version template
+    # У Dovecot 2.3 и 2.4 несовместимый синтаксис конфига — шаблон по версии
+    version=$(dovecot --version | cut -d' ' -f1)
+    case $version in
+        2.3.*) template=dovecot-2.3.conf ;;
+        2.4.*) template=dovecot-2.4.conf ;;
+        *) die "Неподдерживаемая версия Dovecot: $version (нужна 2.3 или 2.4)" ;;
+    esac
+    log "Настройка Dovecot $version (шаблон $template)"
     # Оригинальный конфиг пакета сохраняем один раз
     [[ -e $conf.orig-mail_backup ]] || cp -a "$conf" "$conf.orig-mail_backup"
 
@@ -216,7 +223,7 @@ configure_dovecot() {
         -e "s|@DATA_DIR@|$DATA_DIR|g" \
         -e "s|@SERVICE_USER@|$SERVICE_USER|g" \
         -e "s|@SERVICE_UID@|$(id -u "$SERVICE_USER")|g" \
-        "$APP_DIR/deploy/dovecot/dovecot.conf" >"$tmp"
+        "$APP_DIR/deploy/dovecot/$template" >"$tmp"
 
     local err
     if ! err=$(doveconf -c "$tmp" -n 2>&1 >/dev/null); then
@@ -281,5 +288,5 @@ cat <<EOF
   Настройки: $ENV_FILE
 
 Команды приложения: mail-backup <команда>  (mail-backup --help)
-Проверка на одном ящике — раздел 8 в deploy/INSTALL.md.
+Проверка на одном ящике — раздел «Проверка этапа 2» в deploy/INSTALL.md.
 EOF

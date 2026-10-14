@@ -111,7 +111,10 @@ mail_backup/
 deploy/
   install.sh           — установщик/обновлятор (--mode dev|prod), идемпотентный
   INSTALL.md           — установка, обновление, чек-лист проверки этапов
-  dovecot/dovecot.conf — шаблон конфига Dovecot 2.4 (плейсхолдеры @...@)
+  dovecot/dovecot-2.3.conf — шаблон конфига Dovecot 2.3 (Ubuntu 24.04, DEV-сервер)
+  dovecot/dovecot-2.4.conf — шаблон конфига Dovecot 2.4 (Ubuntu 25.04+/26.04)
+                         установщик выбирает по `dovecot --version`; раскладка
+                         хранилища в обоих одинаковая; плейсхолдеры @...@
 tests/          — pytest; imapsync подменяется фальшивым скриптом,
                   образец вывода — tests/data/imapsync_output.txt
 ```
@@ -210,6 +213,8 @@ cp .env.example .env
 
 ## Открытые вопросы
 
+- DEV-сервер оказался с Dovecot 2.3 (2.4-шаблон упал на `dovecot_config_version`);
+  поддерживаются обе версии. Любая правка конфига — в ОБА шаблона.
 - Шаблон Dovecot: проверить на 26.04 `mailbox_list_layout = fs` (конфликт имён папок
   `cur/new/tmp`) и работу с кириллическими папками.
 - Перед стабилизацией схемы подключить Alembic (пока `create_all`).

@@ -71,7 +71,8 @@ sudo /opt/mail_backup/deploy/install.sh --mode prod
 4. Создаёт пользователя `mailbackup` и каталоги с нужными правами.
 5. Создаёт `/etc/mail_backup/mail_backup.env` (только при первой установке).
 6. Ставит приложение в venv, создаёт ключи и БД (`mail-backup init`).
-7. Ставит конфиг Dovecot из `deploy/dovecot/dovecot.conf` (сначала проверяет
+7. Ставит конфиг Dovecot из `deploy/dovecot/dovecot-<2.3|2.4>.conf` по версии
+   установленного Dovecot (сначала проверяет
    `doveconf`; оригинал пакета сохраняется как `dovecot.conf.orig-mail_backup`),
    перезапускает Dovecot и проверяет, что он слушает только `127.0.0.1:143`.
 
