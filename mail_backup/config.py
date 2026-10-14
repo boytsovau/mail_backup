@@ -6,6 +6,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -21,6 +22,10 @@ class Settings(BaseSettings):
         env_file=("/etc/mail_backup/mail_backup.env", PROJECT_ENV_FILE),
         extra="ignore",
     )
+
+    # Режим развёртывания: dev — тестовый сервер без отдельного диска,
+    # prod — бэкапы обязаны лежать на отдельном смонтированном диске
+    deploy_mode: Literal["dev", "prod"] = "dev"
 
     # Каталог данных приложения: БД, логи imapsync, временные файлы
     data_dir: Path = Path("/var/lib/mail_backup")

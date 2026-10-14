@@ -178,3 +178,18 @@ def test_dovecot_users_file_permissions():
         dovecot.sync_users(session)
     path = get_settings().dovecot_users_file
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o640
+
+
+def test_prod_refuses_backup_without_mounted_disk(fake_imapsync, monkeypatch):
+    monkeypatch.setenv("MB_DEPLOY_MODE", "prod")
+    get_settings.cache_clear()
+    with new_session() as session:
+        box = add_mailbox(session)
+        run = Run(kind=RunKind.BACKUP, mailbox_id=box.id)
+        session.add(run)
+        session.commit()
+        run = execute_run(session, run.id)
+        assert run.status == RunStatus.FAILED
+        assert "не смонтирован" in run.error_message
+    # imapsync даже не запускался
+    assert not fake_imapsync.exists()

@@ -1,5 +1,6 @@
 """Выполнение запуска (Run): связка БД и обёртки imapsync."""
 
+import os
 import time
 from datetime import datetime
 
@@ -15,6 +16,21 @@ from .providers import Security, get_provider
 
 # Не чаще раза в N секунд пишем прогресс в БД, чтобы не нагружать SQLite
 PROGRESS_SAVE_INTERVAL = 2.0
+
+
+class StorageNotMountedError(RuntimeError):
+    """PROD: диск с бэкапами не смонтирован."""
+
+
+def check_backup_storage() -> None:
+    """В PROD бэкапы пишутся только на отдельный диск.
+
+    Если диск не смонтирован (сбой, перезагрузка без fstab), каталог
+    под точкой монтирования лежит на системном диске — писать туда нельзя.
+    """
+    settings = get_settings()
+    if settings.deploy_mode == "prod" and not os.path.ismount(settings.backup_root):
+        raise StorageNotMountedError(f"Диск с бэкапами не смонтирован: {settings.backup_root}")
 
 
 def mailbox_endpoint(box: Mailbox) -> Endpoint:
@@ -101,6 +117,7 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
 
     try:
         if run.kind in (RunKind.BACKUP, RunKind.RESTORE):
+            check_backup_storage()
             # Учётка ящика в Dovecot должна существовать до подключения к нему
             dovecot.sync_users(session)
         job = build_job(run, just_login=just_login)

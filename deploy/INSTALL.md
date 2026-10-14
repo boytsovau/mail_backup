@@ -1,143 +1,104 @@
-# Ручная установка на Ubuntu 26.04
+# Установка на Ubuntu 26.04
 
-Временная инструкция для поэтапной проверки. На этапе 7 её заменит скрипт установки.
-Все команды выполняются от root (или через `sudo`).
-
-Пути по умолчанию:
+Установку и обновление выполняет `deploy/install.sh`. Повторный запуск безопасен:
+ключи, БД, файл настроек и бэкапы он не трогает.
 
 | Что | Где |
 |---|---|
-| Код и venv | `/opt/mail_backup` |
+| Код и venv | `/opt/mail_backup` (сюда клонировать репозиторий) |
 | Данные (БД, логи, учётки Dovecot) | `/var/lib/mail_backup` |
-| Бэкапы (отдельный диск) | `/srv/mail_backup` |
+| Бэкапы | `/srv/mail_backup` (в PROD — отдельный диск) |
 | Настройки и ключи | `/etc/mail_backup` |
 | Пользователь сервиса | `mailbackup` |
+| Команда приложения | `mail-backup` (обёртка в `/usr/local/bin`, сама переключается на `mailbackup`) |
 
-## 1. Диск под бэкапы
-
-Отдельный диск монтируется в `/srv/mail_backup` через `/etc/fstab`
-(по UUID, `blkid` покажет его). Проверка: `findmnt /srv/mail_backup`.
-
-## 2. Пакеты
+## DEV — тестовый сервер без отдельного диска
 
 ```bash
-apt update
-apt install -y git python3 python3-venv dovecot-imapd
-
-# Зависимости imapsync (список из официальной инструкции imapsync для Ubuntu).
-# Если какого-то пакета в 26.04 нет — убрать его из списка: на шаге 3
-# imapsync сам напишет, каких модулей Perl ему не хватает.
-apt install -y \
-  libauthen-ntlm-perl libclass-load-perl libcrypt-openssl-rsa-perl libcrypt-ssleay-perl \
-  libdata-uniqid-perl libdigest-hmac-perl libdist-checkconflicts-perl libencode-imaputf7-perl \
-  libfile-copy-recursive-perl libfile-tail-perl libio-compress-perl libio-socket-inet6-perl \
-  libio-socket-ssl-perl libio-tee-perl libjson-webtoken-perl libmail-imapclient-perl \
-  libmodule-scandeps-perl libnet-dbus-perl libnet-dns-perl libnet-ssleay-perl \
-  libpar-packer-perl libproc-processtable-perl libreadonly-perl libregexp-common-perl \
-  libsys-meminfo-perl libterm-readkey-perl libtest-fatal-perl libtest-mock-guard-perl \
-  libtest-mockobject-perl libtest-pod-perl libtest-requires-perl libtest-simple-perl \
-  libunicode-string-perl liburi-perl libtest-nowarnings-perl libtest-deep-perl \
-  libtest-warn-perl make time cpanminus
+sudo git clone <URL-репозитория> /opt/mail_backup
+sudo /opt/mail_backup/deploy/install.sh --mode dev
 ```
 
-## 3. imapsync (фиксированная версия)
+Бэкапы лягут в `/srv/mail_backup` на системном диске — установщик предупредит об этом.
+
+## PROD — бэкапы на отдельном диске
+
+Сначала смонтировать диск в `/srv/mail_backup` (пример для нового диска `/dev/sdb`):
 
 ```bash
-IMAPSYNC_VERSION=2.314
-wget -O /usr/local/bin/imapsync \
-  "https://raw.githubusercontent.com/imapsync/imapsync/imapsync-${IMAPSYNC_VERSION}/imapsync"
-chmod 755 /usr/local/bin/imapsync
-imapsync --version     # должно напечатать 2.314
-imapsync               # без аргументов: проверка модулей Perl и справка
+sudo mkfs.ext4 -L mailbackup /dev/sdb          # ВНИМАНИЕ: стирает диск
+sudo mkdir -p /srv/mail_backup
+echo "UUID=$(sudo blkid -s UUID -o value /dev/sdb) /srv/mail_backup ext4 defaults,noatime 0 2" \
+  | sudo tee -a /etc/fstab
+sudo mount /srv/mail_backup && findmnt /srv/mail_backup
 ```
 
-## 4. Пользователь и каталоги
+Затем:
 
 ```bash
-adduser --system --group --home /var/lib/mail_backup mailbackup
-# Dovecot должен пройти в /var/lib/mail_backup до файла учёток, но не листать каталог
-chmod 0711 /var/lib/mail_backup
-
-# Каталог учёток Dovecot: группа dovecot + setgid, чтобы новые файлы
-# получали группу dovecot и Dovecot мог их читать
-install -d -o mailbackup -g dovecot -m 2750 /var/lib/mail_backup/dovecot
-
-install -d -o mailbackup -g mailbackup -m 0700 /srv/mail_backup /etc/mail_backup
+sudo git clone <URL-репозитория> /opt/mail_backup
+sudo /opt/mail_backup/deploy/install.sh --mode prod
 ```
 
-## 5. Код и venv
+Защита от записи бэкапов мимо диска:
 
-Код из git-репозитория проекта:
+- установщик в режиме `prod` прерывается, если `/srv/mail_backup` не точка монтирования;
+- Dovecot получает `RequiresMountsFor=/srv/mail_backup` и не стартует без диска;
+- приложение перед каждым бэкапом проверяет, что диск смонтирован, иначе запуск — «сбой».
+
+Другой путь к диску: `--backup-root /mnt/backup`. Режим и путь запоминаются
+в `/etc/mail_backup/mail_backup.env`; повторный запуск с другими значениями
+установщик отклонит, чтобы случайно не переключить PROD в DEV.
+
+## Что делает установщик
+
+1. Проверяет ОС, режим и (в PROD) диск.
+2. Ставит пакеты: git, python3-venv, dovecot-imapd, Perl-модули для imapsync.
+   Пакеты, которых нет в репозиториях, пропускает с предупреждением.
+3. Скачивает imapsync 2.314 по тегу с GitHub, сверяет SHA256, проверяет запуск.
+4. Создаёт пользователя `mailbackup` и каталоги с нужными правами.
+5. Создаёт `/etc/mail_backup/mail_backup.env` (только при первой установке).
+6. Ставит приложение в venv, создаёт ключи и БД (`mail-backup init`).
+7. Ставит конфиг Dovecot из `deploy/dovecot/dovecot.conf` (сначала проверяет
+   `doveconf`; оригинал пакета сохраняется как `dovecot.conf.orig-mail_backup`),
+   перезапускает Dovecot и проверяет, что он слушает только `127.0.0.1:143`.
+
+## Обновление
 
 ```bash
-git clone <URL-репозитория> /opt/mail_backup
-python3 -m venv /opt/mail_backup/.venv
-/opt/mail_backup/.venv/bin/pip install -e /opt/mail_backup
+cd /opt/mail_backup && sudo git pull
+sudo ./deploy/install.sh --mode dev     # или prod — тот же, что при установке
 ```
 
-Обновление на следующих этапах: `cd /opt/mail_backup && git pull && .venv/bin/pip install -e .`
-
-## 6. Настройки
-
-```bash
-cat > /etc/mail_backup/mail_backup.env <<'EOF'
-MB_DATA_DIR=/var/lib/mail_backup
-MB_BACKUP_ROOT=/srv/mail_backup
-MB_SECRETS_DIR=/etc/mail_backup
-MB_IMAPSYNC_BIN=/usr/local/bin/imapsync
-EOF
-chown mailbackup:mailbackup /etc/mail_backup/mail_backup.env
-chmod 600 /etc/mail_backup/mail_backup.env
-
-# Ярлык: все команды приложения — от имени mailbackup
-alias mb='sudo -u mailbackup -H /opt/mail_backup/.venv/bin/mail-backup'
-
-mb init     # каталоги, ключи, БД
-mb check    # покажет пути и версию imapsync
-```
-
-## 7. Dovecot
-
-```bash
-cp /etc/dovecot/dovecot.conf /etc/dovecot/dovecot.conf.orig
-sed -e "s|@BACKUP_ROOT@|/srv/mail_backup|g" \
-    -e "s|@DATA_DIR@|/var/lib/mail_backup|g" \
-    -e "s|@SERVICE_USER@|mailbackup|g" \
-    -e "s|@SERVICE_UID@|$(id -u mailbackup)|g" \
-    /opt/mail_backup/deploy/dovecot/dovecot.conf > /etc/dovecot/dovecot.conf
-
-doveconf -n > /dev/null && echo "конфиг OK"   # синтаксическая проверка
-systemctl restart dovecot
-ss -ltnp | grep ':143'                         # должен слушать только 127.0.0.1:143
-```
-
-Если `doveconf` ругается — прислать его вывод: шаблон написан по документации 2.4,
-но на живой 26.04 ещё не проверялся.
-
-## 8. Проверка этапа 2 на одном ящике
+## Проверка этапа 2 на одном ящике
 
 Для Яндекса и Mail.ru нужен **пароль приложения** (подсказка печатается при добавлении).
 
 ```bash
-mb mailbox-add user@yandex.ru --provider yandex   # спросит пароль
-mb mailbox-list
+mail-backup mailbox-add user@yandex.ru --provider yandex   # спросит пароль
+mail-backup mailbox-list
 
-mb backup 1 --check   # только вход на хостер и в локальный Dovecot
-mb backup 1 --dry     # пробный прогон: что было бы скопировано
-mb backup 1           # настоящий бэкап
-mb backup 1           # повтор: должно быть «Писем перенесено: 0»
+mail-backup backup 1 --check   # только вход на хостер и в локальный Dovecot
+mail-backup backup 1 --dry     # пробный прогон: что было бы скопировано
+mail-backup backup 1           # настоящий бэкап
+mail-backup backup 1           # повтор: должно быть «Писем перенесено: 0»
 ```
 
 Что проверить:
 
 - В веб-интерфейсе хостера непрочитанные письма **остались непрочитанными**,
   ничего не удалено и не перемещено.
-- Письма лежат в хранилище:
-  `doveadm mailbox status -u user@yandex.ru 'messages unseen' '*'` —
-  числа должны совпадать с хостером, включая непрочитанные.
+- Письма лежат в хранилище (числа совпадают с хостером, включая непрочитанные):
+  `sudo doveadm mailbox status -u user@yandex.ru 'messages unseen' '*'`
 - Кириллические папки («Отправленные», «Черновики») на месте:
-  `doveadm mailbox list -u user@yandex.ru`.
-- Лог запуска: путь печатается в конце `mb backup`, каталог `/var/lib/mail_backup/logs/`.
-- Файлов паролей не осталось: `ls /var/lib/mail_backup/tmp/` — пусто.
+  `sudo doveadm mailbox list -u user@yandex.ru`
+- Файлов паролей не осталось: `sudo ls /var/lib/mail_backup/tmp/` — пусто.
 
-При ошибке прислать вывод `mb backup` и последние ~50 строк лога запуска.
+## Если что-то пошло не так
+
+Прислать:
+
+- вывод установщика (последний экран);
+- при ошибке Dovecot: `sudo journalctl -u dovecot -n 50`;
+- при ошибке бэкапа: вывод `mail-backup backup ...` и последние ~50 строк лога
+  (путь к логу печатается в конце).
