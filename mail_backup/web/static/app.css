@@ -19,6 +19,17 @@
   --code-bg: #0f172a;
   --code-text: #e2e8f0;
   --radius: 10px;
+  /* Цвета ящиков на графиках: порядок проверен на различимость при дальтонизме,
+     цвет закреплён за ящиком (stats.color_slots) */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --series-other: #898781;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -38,6 +49,14 @@
     --info-bg: #17243f;
     --progress: #1f3c6e;
     --code-bg: #0a0d12;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
   }
 }
 
@@ -121,6 +140,11 @@ td.wide { min-width: 260px; }
 .badge-failed { color: var(--error); background: var(--error-bg); }
 .badge-running, .badge-queued { color: var(--accent); background: var(--info-bg); }
 .badge-cancelled { color: var(--muted); background: var(--bg); }
+.badge-health-ok { color: var(--ok); background: var(--ok-bg); }
+.badge-health-warning { color: var(--warn); background: var(--warn-bg); }
+.badge-health-failed, .badge-health-stale { color: var(--error); background: var(--error-bg); }
+.tile-alert { border-color: var(--error); }
+.attention { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .5rem; }
 
 .progress { position: relative; height: 22px; background: var(--bg); border-radius: 6px; overflow: hidden; margin-top: .35rem; min-width: 220px; }
 .progress-bar { position: absolute; inset: 0 auto 0 0; background: var(--progress); }
@@ -204,12 +228,28 @@ pre.log, pre.cmd {
 }
 pre.log { max-height: 480px; }
 
+/* --- Графики ----------------------------------------------------------------- */
+.filters { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+.filters label { min-width: 150px; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 0 1.25rem; }
+/* min-width: 0 — иначе холст Chart.js распирает ячейку сетки на узком экране */
+.chart-grid > * { min-width: 0; }
+.chart-card h2 { margin: 0 0 .2rem; }
+.chart-card .hint { margin-bottom: .75rem; }
+.chart-box { position: relative; height: 260px; }
+.chart-empty { height: 120px; display: flex; align-items: center; justify-content: center; margin: 0;
+  border: 1px dashed var(--border); border-radius: 8px; }
+table.numeric td:not(:first-child), table.numeric th:not(:first-child) { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.numeric tfoot td { font-weight: 600; border-top: 1px solid var(--border); border-bottom: 0; }
+.card-foot { margin: .5rem 0 0; text-align: right; }
+
 .muted { color: var(--muted); }
 /* Атрибут hidden сильнее display у fieldset/.stack (условные части форм) */
 [hidden] { display: none !important; }
 .small { font-size: .8rem; }
 .text-error { color: var(--error); }
 .text-ok { color: var(--ok); }
+.text-warn { color: var(--warn); }
 .pager { display: flex; gap: 1rem; align-items: center; justify-content: center; margin-top: 1rem; }
 
 @media (max-width: 800px) {
@@ -223,6 +263,7 @@ pre.log { max-height: 480px; }
   .logout { margin-left: auto; }
   .tiles { grid-template-columns: 1fr 1fr; gap: .75rem; }
   .tile-value { font-size: 1.3rem; }
+  .chart-box { height: 220px; }
   .card { padding: 1rem; }
   .facts { grid-template-columns: 1fr; gap: .1rem; }
   .facts dd { margin-bottom: .5rem; }

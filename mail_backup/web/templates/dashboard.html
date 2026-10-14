@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_macros.html" import status, progress with context %}
 {% block title %}Обзор{% endblock %}
+{% block scripts %}<script src="/static/chart.umd.min.js" defer></script>{% endblock %}
 {% block content %}
 {# Пока есть активные запуски, обзор обновляется сам #}
 <div id="dash" {% if active_runs %}hx-get="/" hx-trigger="every 5s" hx-select="#dash" hx-swap="outerHTML"{% endif %}>
@@ -13,9 +14,18 @@
 {% endif %}
 
 <div class="tiles">
-  <div class="tile">
-    <div class="tile-label">Ящиков</div>
-    <div class="tile-value">{{ rows | length }}</div>
+  {% set enabled = rows | rejectattr('health', 'equalto', 'off') | list %}
+  {% set problems = health.failed + health.stale + health.warning %}
+  <div class="tile {{ 'tile-alert' if health.failed or health.stale }}">
+    <div class="tile-label">Бэкапы в порядке</div>
+    <div class="tile-value">{{ health.ok | length }} из {{ enabled | length }}</div>
+    <div class="tile-sub">
+      {% if health.failed %}<span class="text-error">✕ сбой: {{ health.failed | length }}</span> {% endif %}
+      {% if health.stale %}<span class="text-error">⏱ просрочено: {{ health.stale | length }}</span> {% endif %}
+      {% if health.warning %}<span class="text-warn">⚠ с ошибками: {{ health.warning | length }}</span> {% endif %}
+      {% if health.never %}ещё не было: {{ health.never | length }} {% endif %}
+      {% if not problems and not health.never %}{{ rows | length }} ящиков{% if health.off %}, выключено {{ health.off | length }}{% endif %}{% endif %}
+    </div>
   </div>
   <div class="tile">
     <div class="tile-label">Сейчас в работе</div>
@@ -59,6 +69,27 @@
 </section>
 {% endif %}
 
+{% if problems %}
+<section class="card">
+  <h2>Требуют внимания</h2>
+  <ul class="attention">
+  {% for row in problems %}
+    <li>
+      <span class="badge badge-health-{{ row.health }}">{{ HEALTH_LABELS[row.health] }}</span>
+      <a href="/mailboxes/{{ row.box.id }}/edit"><strong>{{ row.box.name }}</strong></a>
+      <span class="muted">—
+      {% if row.health == 'failed' %}последний бэкап не удался{% if row.last_ok %}, удачный был {{ dt(row.last_ok.finished_at) }}{% endif %}
+      {% elif row.health == 'stale' %}{% if row.last_ok %}удачного бэкапа не было с {{ dt(row.last_ok.finished_at) }}{% else %}удачного бэкапа ещё не было{% endif %}
+      {% else %}последний бэкап: ошибок по письмам {{ row.last_ok.errors_count or 0 }}{% endif %}
+      </span>
+      {% set run = row.last_run if row.health == 'failed' else row.last_ok %}
+      {% if run %}<a href="/runs/{{ run.id }}">лог</a>{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 <section class="card">
   <div class="card-head">
     <h2>Ящики</h2>
@@ -71,4 +102,21 @@
   {% endif %}
 </section>
 </div>
+
+{# График вне #dash: автообновление обзора его не перерисовывает #}
+{% if rows %}
+<script type="application/json" id="overview-chart">{{ chart.to_json() | tojson }}</script>
+<section class="card chart-card">
+  <div class="card-head">
+    <h2>Скопировано за {{ chart.days | length }} дней</h2>
+    <a href="/charts">Все графики →</a>
+  </div>
+  {% if chart.has_data('volume') %}
+    <div class="chart-box"><canvas data-chart="volume" data-source="overview-chart" role="img"
+      aria-label="Объём, скопированный бэкапами по дням"></canvas></div>
+  {% else %}
+    <p class="chart-empty muted">За {{ chart.days | length }} дней бэкапов не было</p>
+  {% endif %}
+</section>
+{% endif %}
 {% endblock %}

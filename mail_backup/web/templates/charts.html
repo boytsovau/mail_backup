@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Графики{% endblock %}
+{% block scripts %}<script src="/static/chart.umd.min.js" defer></script>{% endblock %}
+
+{% macro chart(name, title, hint) -%}
+<section class="card chart-card">
+  <h2>{{ title }}</h2>
+  <p class="hint">{{ hint }}</p>
+  {% if data.has_data(name) %}
+    <div class="chart-box"><canvas data-chart="{{ name }}" data-source="chart-data" role="img" aria-label="{{ title }}"></canvas></div>
+  {% else %}
+    <p class="chart-empty muted">Нет данных за период</p>
+  {% endif %}
+</section>
+{%- endmacro %}
+
+{% block content %}
+{# Данные графиков для app.js: тип application/json — данные, не исполняемый код #}
+<script type="application/json" id="chart-data">{{ data.to_json() | tojson }}</script>
+
+<section class="card">
+  <div class="card-head">
+    <h1>Графики бэкапов</h1>
+    <form method="get" class="filters" data-autosubmit>
+      <label>Период
+        <select name="days">
+          {% for p in periods %}
+            <option value="{{ p }}" {{ 'selected' if p == days }}>{{ {7: 'неделя', 30: '30 дней', 90: '90 дней', 365: 'год'}[p] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Ящик
+        <select name="mailbox">
+          <option value="">все ящики</option>
+          {% for box in boxes %}
+            <option value="{{ box.id }}" {{ 'selected' if box.id == mailbox }}>{{ box.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <noscript><button>Показать</button></noscript>
+    </form>
+  </div>
+  <p class="hint">
+    Только бэкапы (без восстановлений, переносов и пробных прогонов); запуск относится к дню,
+    когда он закончился, по часовому поясу {{ prefs.timezone }}.
+    {% if data.series | length > 1 and data.series[-1].color == 'other' %}
+      Цветов хватает на {{ data.series | length - 1 }} ящиков, остальные сложены в «Другие» —
+      выберите ящик в фильтре, чтобы посмотреть его отдельно.
+    {% endif %}
+  </p>
+</section>
+
+{% if not boxes %}
+  <section class="card"><p class="muted">Ящиков пока нет. <a href="/mailboxes/new">Добавьте первый</a>.</p></section>
+{% else %}
+<div class="chart-grid">
+  {{ chart('volume', 'Скопировано за день', 'Объём новых писем, скопированных с хостера. Первый бэкап ящика копирует его целиком.') }}
+  {{ chart('size', 'Размер ящиков на хостере', 'По последнему бэкапу или оценке; между замерами держится прежнее значение.') }}
+  {{ chart('duration', 'Время бэкапов за день', 'Сколько минут в сумме работал imapsync по каждому ящику.') }}
+  {{ chart('outcomes', 'Результаты бэкапов', 'Сколько запусков за день закончились успешно, с ошибками, сбоем или были отменены.') }}
+  {{ chart('errors', 'Ошибки по письмам', 'Письма, которые imapsync не смог скопировать (запуск получает статус «с ошибками»).') }}
+</div>
+
+<section class="card">
+  <h2>Итого за период</h2>
+  <div class="table-wrap">
+  <table class="numeric">
+    <thead>
+      <tr><th>Ящик</th><th>Бэкапов</th><th>Успешно</th><th>С ошибками</th><th>Сбой / отмена</th>
+        <th>Скопировано писем</th><th>Объём</th><th>Ошибок по письмам</th><th>Среднее время</th><th>Размер ящика</th></tr>
+    </thead>
+    <tbody>
+    {% for t in data.totals %}
+      <tr>
+        <td><a href="/runs?mailbox={{ t.box.id }}"><strong>{{ t.box.name }}</strong></a></td>
+        <td>{{ t.backups }}</td>
+        <td>{{ t.ok }}</td>
+        <td class="{{ 'text-warn' if t.warning }}">{{ t.warning }}</td>
+        <td class="{{ 'text-error' if t.failed }}">{{ t.failed }}</td>
+        <td>{{ t.messages }}</td>
+        <td>{{ t.bytes | size }}</td>
+        <td>{{ t.errors }}</td>
+        <td>{{ t.avg_duration | duration }}</td>
+        <td>{% if t.size is not none %}{{ t.size | size }}<div class="muted small">{{ t.size_messages }} писем</div>{% else %}—{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+    {% if data.totals | length > 1 %}
+    <tfoot>
+      <tr>
+        <td>Всего</td>
+        <td>{{ data.totals | sum(attribute='backups') }}</td>
+        <td>{{ data.totals | sum(attribute='ok') }}</td>
+        <td>{{ data.totals | sum(attribute='warning') }}</td>
+        <td>{{ data.totals | sum(attribute='failed') }}</td>
+        <td>{{ data.totals | sum(attribute='messages') }}</td>
+        <td>{{ (data.totals | sum(attribute='bytes')) | size }}</td>
+        <td>{{ data.totals | sum(attribute='errors') }}</td>
+        <td></td>
+        <td>{{ (data.totals | map(attribute='size') | select | sum) | size }}</td>
+      </tr>
+    </tfoot>
+    {% endif %}
+  </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
