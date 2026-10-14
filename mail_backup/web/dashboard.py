@@ -5,24 +5,51 @@ import shutil
 import socket
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from enum import StrEnum
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import app_settings, auth, storage_estimate
+from .. import app_settings, auth, stats, storage_estimate
 from ..config import get_settings
 from ..db import get_session
 from ..jobs import active_run, enqueue_run, last_backup
-from ..models import Mailbox, Run, RunKind, RunStatus, RunTrigger
+from ..models import Mailbox, Run, RunKind, RunStatus, RunTrigger, utcnow
 from ..worker import next_slot, parse_schedule, worker_alive
-from .common import csrf_protect, flash, render, require_admin
+from .common import csrf_protect, flash, render, require_admin, templates
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 ACTIVE = (RunStatus.QUEUED, RunStatus.RUNNING)
+# Бэкап по расписанию — минимум раз в сутки; удачный старше этого срока — «просрочен»
+STALE_AFTER = timedelta(hours=26)
+# График на обзоре, дней
+OVERVIEW_DAYS = 14
+
+
+class Health(StrEnum):
+    """Состояние бэкапа ящика для обзора."""
+
+    OK = "ok"
+    WARNING = "warning"  # последний бэкап прошёл с ошибками по письмам
+    FAILED = "failed"  # последний настоящий бэкап — сбой или отмена
+    STALE = "stale"  # по расписанию, но удачного бэкапа давно не было
+    NEVER = "never"  # бэкапа ещё не было, и это пока нормально
+    OFF = "off"  # ящик выключен
+
+
+HEALTH_LABELS = {
+    Health.OK: "в порядке",
+    Health.WARNING: "с ошибками",
+    Health.FAILED: "сбой",
+    Health.STALE: "просрочен",
+    Health.NEVER: "ещё не было",
+    Health.OFF: "выключен",
+}
+templates.env.globals["HEALTH_LABELS"] = HEALTH_LABELS
 
 
 @dataclass
@@ -32,16 +59,36 @@ class MailboxRow:
     last_ok: Run | None
     active: Run | None
     next_at: datetime | None
+    health: Health = Health.NEVER
+
+
+def backup_health(box: Mailbox, last_real: Run | None, last_ok: Run | None, now: datetime) -> Health:
+    """Состояние по последнему настоящему бэкапу и последнему удачному."""
+    if not box.enabled:
+        return Health.OFF
+    if last_real is not None and last_real.status not in stats.DONE_OK:
+        return Health.FAILED
+    # Без расписания бэкап только ручной — «просрочен» не бывает
+    scheduled = bool(box.schedule)
+    if last_ok is None:
+        return Health.STALE if scheduled and box.created_at < now - STALE_AFTER else Health.NEVER
+    if scheduled and last_ok.finished_at < now - STALE_AFTER:
+        return Health.STALE
+    return Health.WARNING if last_ok.status == RunStatus.WARNING else Health.OK
 
 
 def mailbox_overview(session: Session) -> list[MailboxRow]:
     prefs = app_settings.load(session)
     now_local = datetime.now(prefs.tz)
+    now = utcnow()
     rows = []
     for box in session.scalars(select(Mailbox).order_by(Mailbox.name)):
         backups = select(Run).where(Run.mailbox_id == box.id, Run.kind == RunKind.BACKUP).order_by(Run.id.desc())
         last_run = session.scalars(backups.where(Run.status.not_in(ACTIVE)).limit(1)).first()
         last_ok = last_backup(session, box.id)
+        last_real = session.scalars(
+            backups.where(Run.status.in_(stats.DONE), Run.dry_run.is_(False)).limit(1)
+        ).first()
         active = session.scalars(
             select(Run).where(Run.mailbox_id == box.id, Run.status.in_(ACTIVE)).limit(1)
         ).first()
@@ -51,7 +98,8 @@ def mailbox_overview(session: Session) -> list[MailboxRow]:
             nxt = None
         # next_slot отдаёт время в поясе админки; в шаблон — как наивный UTC, как всё остальное
         next_at = nxt.astimezone(timezone.utc).replace(tzinfo=None) if nxt else None
-        rows.append(MailboxRow(box, last_run, last_ok, active, next_at))
+        rows.append(MailboxRow(box, last_run, last_ok, active, next_at,
+                               backup_health(box, last_real, last_ok, now)))
     return rows
 
 
@@ -68,11 +116,15 @@ def disk_usage() -> dict | None:
 @router.get("/")
 def dashboard(request: Request, session: Session = Depends(get_session)):
     active_runs = list(session.scalars(select(Run).where(Run.status.in_(ACTIVE)).order_by(Run.id)))
+    rows = mailbox_overview(session)
+    health = {h: [r for r in rows if r.health == h] for h in Health}
     return render(request, session, "dashboard.html", {
-        "rows": mailbox_overview(session),
+        "rows": rows,
+        "health": health,
         "active_runs": active_runs,
         "disk": disk_usage(),
         "worker_ok": worker_alive(session),
+        "chart": stats.collect(session, app_settings.load(session).tz, OVERVIEW_DAYS),
     })
 
 

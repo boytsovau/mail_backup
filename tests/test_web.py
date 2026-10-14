@@ -1,9 +1,12 @@
+import json
 import re
+from datetime import timedelta
 
 import pytest
+from conftest import add_mailbox
 from fastapi.testclient import TestClient
 
-from mail_backup import app_settings, auth, crypto
+from mail_backup import app_settings, auth, crypto, models
 from mail_backup.db import new_session
 from mail_backup.main import app
 from mail_backup.models import Mailbox, Run, RunStatus
@@ -340,3 +343,35 @@ def test_repeat_without_password_opens_prefilled_wizard(logged_in):
     page = logged_in.get(r.headers["location"])
     assert 'value="to@mail.ru"' in page.text and 'value="Old"' in page.text
     assert '<option value="mailru" selected' in page.text
+
+
+def test_charts_page(logged_in):
+    assert "Ящиков пока нет" in logged_in.get("/charts").text
+    with new_session() as session:
+        box = add_mailbox(session)
+        session.add(Run(kind="backup", mailbox_id=box.id, status=RunStatus.SUCCESS, finished_at=models.utcnow(),
+                        bytes_transferred=5 * 1024**2, messages_transferred=7, host1_bytes=10 * 1024**2,
+                        host1_messages=70, duration_seconds=90))
+        session.commit()
+        box_id = box.id
+    page = logged_in.get("/charts?days=7")
+    assert page.status_code == 200
+    data = json.loads(re.search(r'id="chart-data">(.*?)</script>', page.text, re.S).group(1))
+    assert len(data["labels"]) == 7 and data["charts"]["volume"]["datasets"][0]["data"][-1] == 5 * 1024**2
+    assert 'data-chart="size"' in page.text and "5.0 МБ" in page.text
+    # Неизвестный период и чужой ящик — значения по умолчанию, а не ошибка
+    page = logged_in.get(f"/charts?days=5&mailbox={box_id + 100}")
+    assert page.status_code == 200 and '<option value="30" selected>' in page.text
+
+
+def test_dashboard_shows_stale_backup(logged_in):
+    with new_session() as session:
+        box = add_mailbox(session)
+        box.schedule = "03:00"
+        box.created_at = models.utcnow() - timedelta(days=5)
+        session.add(Run(kind="backup", mailbox_id=box.id, status=RunStatus.SUCCESS,
+                        finished_at=models.utcnow() - timedelta(days=3)))
+        session.commit()
+    page = logged_in.get("/")
+    assert "Требуют внимания" in page.text and "просрочен" in page.text
+    assert 'id="overview-chart"' in page.text

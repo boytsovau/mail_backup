@@ -7,6 +7,8 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📬</text></svg>">
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js" defer></script>
+  {# Chart.js — только на страницах с графиками; до app.js, который их рисует #}
+  {% block scripts %}{% endblock %}
   <script src="/static/app.js" defer></script>
 </head>
 {# Токен CSRF уходит с каждым htmx-запросом в заголовке #}
@@ -19,6 +21,7 @@
     <a href="/" class="{{ 'active' if path == '/' }}">Обзор</a>
     <a href="/mailboxes" class="{{ 'active' if path.startswith('/mailboxes') }}">Ящики</a>
     <a href="/runs" class="{{ 'active' if path.startswith('/runs') }}">Запуски</a>
+    <a href="/charts" class="{{ 'active' if path.startswith('/charts') }}">Графики</a>
     <a href="/storage" class="{{ 'active' if path.startswith('/storage') }}">Место</a>
     <a href="/settings" class="{{ 'active' if path.startswith('/settings') }}">Настройки</a>
     <a href="/system" class="{{ 'active' if path.startswith('/system') }}">Система</a>

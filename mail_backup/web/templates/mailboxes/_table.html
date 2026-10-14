@@ -25,11 +25,13 @@
         {% elif row.last_run %}
           <a href="/runs/{{ row.last_run.id }}">{{ status(row.last_run) }}</a>
           <div class="muted small">{{ dt(row.last_run.finished_at) }}</div>
+          {% if row.health == 'stale' %}<span class="badge badge-health-stale" title="Удачного бэкапа не было больше суток">⏱ просрочен</span>{% endif %}
           {% if row.last_ok and row.last_ok.id != row.last_run.id %}
             <div class="muted small">последний удачный: {{ dt(row.last_ok.finished_at) }}</div>
           {% endif %}
         {% else %}
           <span class="muted">ещё не было</span>
+          {% if row.health == 'stale' %}<span class="badge badge-health-stale">⏱ просрочен</span>{% endif %}
         {% endif %}
       </td>
       <td>
