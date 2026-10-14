@@ -5,34 +5,26 @@
 
 | Что | Где |
 |---|---|
-| Код и venv | `/opt/mail_backup` (владелец — ваш SSH-пользователь, код заливается rsync) |
+| Код и venv | `/opt/mail_backup` (git-клон, владелец — ваш пользователь) |
 | Данные (БД, логи, учётки Dovecot) | `/var/lib/mail_backup` |
 | Бэкапы | `/srv/mail_backup` (в PROD — отдельный диск) |
 | Настройки и ключи | `/etc/mail_backup` |
 | Пользователь сервиса | `mailbackup` |
 | Команда приложения | `mail-backup` (обёртка в `/usr/local/bin`, сама переключается на `mailbackup`) |
 
-## Заливка кода на сервер
+## Код на сервере (git)
 
-Один раз на сервере — каталог под своим пользователем (права 755, чтобы
-пользователь сервиса `mailbackup` мог читать код):
+Клонировать **от своего пользователя, без sudo**: SSH-ключ к репозиторию лежит у него,
+у root ключа нет. Каталог один раз создаётся под своим пользователем (права 755 —
+чтобы пользователь сервиса `mailbackup` мог читать код):
 
 ```bash
 sudo install -d -o "$USER" -g "$USER" -m 0755 /opt/mail_backup
+git clone <URL-репозитория> /opt/mail_backup
 ```
 
-С рабочей машины, из корня проекта (и при первой установке, и при обновлениях):
-
-```bash
-rsync -av --delete \
-  --exclude .venv --exclude '*.egg-info' --exclude __pycache__ \
-  --exclude .pytest_cache --exclude var --exclude .env \
-  ./ <пользователь>@<сервер>:/opt/mail_backup/
-```
-
-Исключения обязательны: `.venv` и `*.egg-info` на сервере создаёт установщик
-от root — без исключений rsync упрётся в права (а `--delete` их не тронет,
-раз они исключены).
+`.venv` и `*.egg-info`, которые установщик создаёт от root, есть в `.gitignore` —
+`git pull` их не трогает.
 
 ## DEV — тестовый сервер без отдельного диска
 
@@ -54,7 +46,7 @@ echo "UUID=$(sudo blkid -s UUID -o value /dev/sdb) /srv/mail_backup ext4 default
 sudo mount /srv/mail_backup && findmnt /srv/mail_backup
 ```
 
-Затем залить код (см. выше) и:
+Затем склонировать код (см. выше) и:
 
 ```bash
 sudo /opt/mail_backup/deploy/install.sh --mode prod
@@ -85,10 +77,9 @@ sudo /opt/mail_backup/deploy/install.sh --mode prod
 
 ## Обновление
 
-Залить код тем же rsync, затем на сервере:
-
 ```bash
-sudo /opt/mail_backup/deploy/install.sh --mode dev     # или prod — тот же, что при установке
+cd /opt/mail_backup && git pull                         # без sudo
+sudo ./deploy/install.sh --mode dev                     # или prod — тот же, что при установке
 ```
 
 ## Проверка этапа 2 на одном ящике
