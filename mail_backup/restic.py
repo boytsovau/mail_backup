@@ -164,7 +164,8 @@ def run_logged(repo: Repo | None, args: list[str], log_path: Path,
     cmd = _cmd(repo, args)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     tail: list[str] = []
-    with open(log_path, "a", encoding="utf-8") as log:
+    # Построчная запись: панель показывает лог, пока restic работает
+    with open(log_path, "a", encoding="utf-8", buffering=1) as log:
         # Пароля в команде нет — только путь к файлу (RESTIC_PASSWORD_FILE)
         log.write("$ " + shlex.join(cmd) + "\n")
         log.flush()
