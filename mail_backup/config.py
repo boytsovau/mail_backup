@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     local_imap_port: int = 143
 
     imapsync_bin: str = "imapsync"
+    restic_bin: str = "restic"
     # Сколько задач imapsync может работать одновременно
     max_parallel_jobs: int = 2
 
@@ -63,6 +64,25 @@ class Settings(BaseSettings):
         # Каталог создаёт установщик с группой dovecot и setgid-битом,
         # чтобы Dovecot мог читать файл, а приложение — перезаписывать
         return self.data_dir / "dovecot" / "users"
+
+    @property
+    def restic_repo(self) -> Path:
+        # Локальный репозиторий снимков — на том же диске, что и зеркало
+        return self.backup_root / "restic"
+
+    @property
+    def restic_password_file(self) -> Path:
+        return self.secrets_dir / "restic.pass"
+
+    @property
+    def restic_cache_dir(self) -> Path:
+        return self.data_dir / "restic-cache"
+
+    @property
+    def ssh_dir(self) -> Path:
+        # Не в secrets_dir: ключ создаётся из веб-панели, а /etc для сервисов
+        # systemd только на чтение (ProtectSystem=full)
+        return self.data_dir / "ssh"
 
     @property
     def fernet_key_file(self) -> Path:

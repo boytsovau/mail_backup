@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf, field_error, status with context %}
+{% block title %}Снимки{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <h1>Снимки restic
+      {% if rprefs.enabled %}<span class="badge badge-success">включены</span>
+      {% else %}<span class="badge badge-cancelled">выключены</span>{% endif %}
+    </h1>
+    <form method="post" action="/restic/toggle"
+          {% if rprefs.enabled %}data-confirm="Выключить снимки? Новые снимки, очистка и выгрузка на серверы прекратятся. Уже сделанные снимки останутся."{% endif %}>
+      {{ csrf() }}
+      <input type="hidden" name="enabled" value="{{ '0' if rprefs.enabled else '1' }}">
+      <button class="{{ '' if rprefs.enabled else 'primary' }}">{{ 'Выключить снимки' if rprefs.enabled else 'Включить снимки' }}</button>
+    </form>
+  </div>
+
+  {% if rprefs.enabled %}
+    <p class="hint">
+      После каждого бэкапа делается снимок зеркала ящика. Удалённые на хостере письма удаляются
+      из зеркала, но остаются в снимках на срок хранения ящика — их можно восстановить на любую дату.
+    </p>
+  {% else %}
+    <div class="flash flash-warn">
+      Снимки выключены: новых снимков, очистки и выгрузки на серверы нет.
+      Чтобы без истории ничего не потерять, зеркало <strong>не удаляет</strong> письма, удалённые на хостере, —
+      они копятся в бэкапе бессрочно. Уже сделанные снимки остаются, из них можно восстановить.
+    </div>
+  {% endif %}
+
+  {% if not version %}
+    <div class="flash flash-error">restic не установлен. На сервере: <code>sudo apt install restic</code>
+      или повторный запуск установщика.</div>
+  {% elif not version_ok %}
+    <div class="flash flash-error">restic {{ version }} слишком старый, нужен ≥ {{ min_version }}.</div>
+  {% elif not initialized %}
+    <div class="flash flash-error">
+      Репозиторий снимков ещё не создан{% if rprefs.enabled %} — пока его нет, бэкапы идут без снимков
+      и зеркало не удаляет письма{% endif %}.
+      <form method="post" action="/restic/init" class="inline">{{ csrf() }}<button class="small primary">Создать репозиторий</button></form>
+    </div>
+  {% endif %}
+
+  <dl class="facts">
+    <dt>restic</dt><dd>{{ version or '—' }}</dd>
+    <dt>Репозиторий</dt><dd><code>{{ repo_path }}</code>{% if repo_size is not none %} · {{ repo_size | size }} на диске{% endif %}</dd>
+    <dt>Пароль</dt>
+    <dd>
+      {% if password %}
+        <code class="secret">{{ password }}</code>
+        <div class="hint">Сохраните пароль вне этого сервера (менеджер паролей, бумага в сейфе): без него
+          снимки на удалённых серверах не расшифровать, если этот сервер пропадёт.</div>
+      {% else %}
+        <form method="post" action="/restic/password" class="inline">{{ csrf() }}<button class="small">Показать пароль</button></form>
+        <span class="hint">Один для локального и удалённых репозиториев.</span>
+      {% endif %}
+    </dd>
+  </dl>
+</section>
+
+<section class="card">
+  <h2>Снимки по ящикам</h2>
+  {% if snap_error %}<div class="flash flash-error">{{ snap_error }}</div>{% endif %}
+  {% if groups %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Ящик</th><th>Снимков</th><th>Первый</th><th>Последний</th><th>Срок хранения</th><th></th></tr></thead>
+    <tbody>
+    {% for g in groups %}
+      <tr>
+        <td>{% if g.box %}<a href="/mailboxes/{{ g.box.id }}/edit"><strong>{{ g.box.name }}</strong></a>
+              <div class="muted small">{{ g.box.login }}</div>
+            {% else %}<span class="muted">удалённый ящик #{{ g.mailbox_id or '?' }}</span>{% endif %}</td>
+        <td>{{ g.items | length }}</td>
+        <td>{{ dt(g.oldest.time) if g.oldest else '—' }}</td>
+        <td>{% if g.newest %}{{ dt(g.newest.time) }}{% if g.newest.size %}<div class="muted small">{{ g.newest.size | size }}</div>{% endif %}{% else %}—{% endif %}</td>
+        <td>{% if g.box %}{{ g.box.retention_days ~ ' дн.' if g.box.retention_days else 'бессрочно' }}{% else %}—{% endif %}</td>
+        <td class="actions">{% if g.box and g.items %}<a class="button small" href="/mailboxes/{{ g.box.id }}/transfer?mode=snapshot">Восстановить…</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <p class="muted">Ящиков пока нет.</p>
+  {% endif %}
+  <p class="hint">Срок хранения задаётся в настройках ящика: снимки старше него удаляются при обслуживании
+    (самый новый снимок не удаляется никогда). Ящики, удалённые из панели, хранят снимки бессрочно.</p>
+</section>
+
+<section class="card" id="remotes">
+  <h2>Удалённые серверы</h2>
+  <p class="hint">Снимки копируются по SFTP на другие серверы — на случай, если пропадёт этот сервер или его диск.
+    На сервер попадают только зашифрованные данные restic.</p>
+
+  <h3>SSH-ключ этого сервера</h3>
+  {% if public_key %}
+    <pre class="cmd">{{ public_key }}</pre>
+    <p class="hint">Добавьте ключ в <code>~/.ssh/authorized_keys</code> пользователя на каждом сервере. Чтобы ключ
+      давал только SFTP, допишите перед ним: <code>restrict,command="/usr/lib/openssh/sftp-server" </code></p>
+    <form method="post" action="/restic/ssh-key" class="inline"
+          data-confirm="Создать новый ключ? Старый перестанет работать, новый придётся добавить на все серверы.">
+      {{ csrf() }}<button class="small">Создать новый ключ</button>
+    </form>
+  {% else %}
+    <form method="post" action="/restic/ssh-key">{{ csrf() }}<button class="primary">Создать SSH-ключ</button></form>
+  {% endif %}
+
+  {% if remotes %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Сервер</th><th>Последняя выгрузка</th><th>По расписанию</th><th></th></tr></thead>
+    <tbody>
+    {% for row in remotes %}
+      {% set r = row.remote %}
+      <tr class="{{ 'disabled' if not r.enabled }}">
+        <td><strong>{{ r.name }}</strong>
+          <div class="muted small"><code>{{ r.url }}</code></div>
+          {% for fp in row.fingerprints %}<div class="muted small">ключ сервера: {{ fp }}</div>{% endfor %}
+          <div id="remote-check-{{ r.id }}"></div></td>
+        <td>
+          {% if row.active %}<a href="/restic/tasks/{{ row.active.id }}">{{ status(row.active) }}</a>
+          {% elif row.last_copy %}<a href="/restic/tasks/{{ row.last_copy.id }}">{{ status(row.last_copy) }}</a>
+            <div class="muted small">{{ dt(row.last_copy.finished_at) }}</div>
+          {% else %}<span class="muted">ещё не было</span>{% endif %}
+        </td>
+        <td>{{ 'да' if r.enabled else 'нет' }}</td>
+        <td class="actions actions-wrap">
+          <button class="small" hx-post="/restic/remotes/{{ r.id }}/check" hx-target="#remote-check-{{ r.id }}">Проверить</button>
+          {% if not row.active %}
+          <form method="post" action="/restic/remotes/{{ r.id }}/upload">{{ csrf() }}<button class="small primary">Выгрузить сейчас</button></form>
+          {% endif %}
+          <form method="post" action="/restic/remotes/{{ r.id }}/toggle">{{ csrf() }}<button class="small">{{ 'Выключить' if r.enabled else 'Включить' }}</button></form>
+          {% if row.fingerprints %}
+          <form method="post" action="/restic/remotes/{{ r.id }}/forget-host"
+                data-confirm="Забыть ключ сервера {{ r.host }}? Делайте это, только если сервер переустановлен.">
+            {{ csrf() }}<button class="small">Забыть ключ</button></form>
+          {% endif %}
+          <form method="post" action="/restic/remotes/{{ r.id }}/delete"
+                data-confirm="Удалить сервер «{{ r.name }}» из панели? Снимки на нём останутся.">
+            {{ csrf() }}<button class="small danger">Удалить</button></form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+
+  <details class="add-remote" {{ 'open' if errors or not remotes }}>
+    <summary>Добавить сервер</summary>
+    <form method="post" action="/restic/remotes" class="stack narrow-form">
+      {{ csrf() }}
+      <label>Название <input name="name" value="{{ form.name }}" placeholder="по умолчанию — адрес сервера"></label>
+      <div class="row">
+        <label class="grow">Сервер (имя или IP)
+          <input name="host" value="{{ form.host }}" required>{{ field_error(errors, 'host') }}</label>
+        <label>Порт SSH <input name="port" value="{{ form.port }}" inputmode="numeric" size="6">{{ field_error(errors, 'port') }}</label>
+      </div>
+      <label>Пользователь <input name="user" value="{{ form.user }}" required>{{ field_error(errors, 'user') }}</label>
+      <label>Каталог репозитория
+        <input name="path" value="{{ form.path }}" required>
+        <span class="hint">Абсолютный (<code>/srv/restic/mail</code>) или относительно домашнего каталога пользователя.
+          Создаётся при первой выгрузке.</span>
+        {{ field_error(errors, 'path') }}
+      </label>
+      <button class="primary">Добавить</button>
+    </form>
+  </details>
+</section>
+
+<section class="card">
+  <h2>Обслуживание</h2>
+  <form method="post" action="/restic/settings" class="stack narrow-form">
+    {{ csrf() }}
+    <label>Время ежедневного обслуживания (часовой пояс {{ prefs.timezone }})
+      <input name="schedule" value="{{ rprefs.schedule }}" placeholder="05:00">
+      <span class="hint">Удаление снимков старше срока хранения, освобождение места (prune) и выгрузка
+        на включённые серверы. Лучше ставить после ночных бэкапов. Пусто — только вручную.</span>
+    </label>
+    <button class="primary">Сохранить</button>
+  </form>
+  <div class="task-buttons">
+    <form method="post" action="/restic/tasks">{{ csrf() }}<input type="hidden" name="kind" value="prune">
+      <button {{ 'disabled' if not ready }}>Очистить сейчас</button></form>
+    <form method="post" action="/restic/tasks">{{ csrf() }}<input type="hidden" name="kind" value="check">
+      <button {{ 'disabled' if not ready }} title="restic check: структура репозитория и целостность индексов">Проверить целостность</button></form>
+  </div>
+</section>
+
+{% if tasks %}
+<section class="card">
+  <h2>Последние задачи</h2>
+  {# Пока задачи идут, таблица обновляется сама #}
+  <div id="restic-tasks" {% if tasks_active %}hx-get="/restic" hx-trigger="every 5s" hx-select="#restic-tasks" hx-swap="outerHTML"{% endif %}>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Задача</th><th>Статус</th><th>Начата</th><th>Длительность</th></tr></thead>
+    <tbody>
+    {% for t in tasks %}
+      <tr>
+        <td><a href="/restic/tasks/{{ t.id }}">{{ t.id }}</a></td>
+        <td>{{ TASK_LABELS[t.kind] | capitalize }}{% if t.remote %} → {{ t.remote.name }}{% elif t.kind != 'copy' %} (локальный){% endif %}
+          <div class="muted small">{{ TRIGGER_LABELS[t.trigger] }}</div></td>
+        <td>{{ status(t) }}{% if t.error_message %}<div class="text-error small">{{ t.error_message | truncate(120) }}</div>{% endif %}</td>
+        <td>{{ dt(t.started_at or t.created_at) }}</td>
+        <td>{% if t.started_at and t.finished_at %}{{ (t.finished_at - t.started_at).total_seconds() | duration }}{% else %}—{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

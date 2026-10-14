@@ -8,7 +8,8 @@ from conftest import add_mailbox
 from mail_backup import app_settings
 from mail_backup.db import new_session
 from mail_backup.models import Run, RunKind, RunStatus, RunTrigger, utcnow
-from mail_backup.worker import Worker, enqueue_due_backups, latest_slot, next_slot, parse_schedule, worker_alive
+from mail_backup.schedule import latest_slot, next_slot, parse_schedule
+from mail_backup.worker import Worker, enqueue_due_backups, worker_alive
 
 MSK = ZoneInfo("Europe/Moscow")
 PREFS = app_settings.AppSettings(max_parallel_jobs=2, timezone="Europe/Moscow")

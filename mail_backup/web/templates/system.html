@@ -13,6 +13,9 @@
         <div class="muted small">sudo systemctl status dovecot</div>{% endif %}
         <div class="muted small">{{ dovecot_version }}</div></dd>
     <dt>imapsync</dt><dd>{{ imapsync_version }}</dd>
+    <dt>restic</dt>
+    <dd>{{ restic_version or 'не установлен' }}
+        {% if restic_version %}<div class="muted small">{{ 'репозиторий готов' if restic_ready else 'репозиторий не создан' }} · <a href="/restic">Снимки</a></div>{% endif %}</dd>
     <dt>Диск с бэкапами</dt>
     <dd>
       {% if backup_mounted %}отдельный диск{% else %}<span class="{{ 'text-error' if env.MB_DEPLOY_MODE == 'prod' }}">не точка монтирования (системный диск)</span>{% endif %}

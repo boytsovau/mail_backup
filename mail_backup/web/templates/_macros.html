@@ -7,7 +7,11 @@
 {%- endmacro %}
 
 {% macro progress(run) -%}
-  {%- if run.progress_total -%}
+  {%- if run.phase == 'snapshot' -%}
+    <span class="muted">создаётся снимок restic…</span>
+  {%- elif run.phase == 'unpack' -%}
+    <span class="muted">распаковка снимка от {{ dt(run.source_snapshot_time) }}…</span>
+  {%- elif run.progress_total -%}
     {% set pct = (run.progress_done * 100 / run.progress_total) | round | int %}
     <div class="progress" title="{{ run.progress_done }} из {{ run.progress_total }} писем">
       <div class="progress-bar" style="width: {{ pct }}%"></div>

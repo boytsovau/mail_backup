@@ -1,7 +1,7 @@
 """Мастер восстановления и переноса: выбор получателя, пробный прогон, запуск.
 
-Восстановление — из бэкапа (локальный Dovecot) в любой ящик, в т.ч. в исходный.
-Перенос — напрямую с хостера ящика в другой ящик. Источник в обоих случаях
+Восстановление — из бэкапа (локальный Dovecot) или из снимка restic на выбранную
+дату в любой ящик, в т.ч. в исходный. Перенос — напрямую с хостера ящика в другой ящик. Источник в обоих случаях
 только читается; в получателе imapsync ничего не удаляет (см. command.check_safe).
 """
 
@@ -12,7 +12,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from .. import crypto
+from .. import crypto, restic
 from ..db import get_session
 from ..imapcheck import check_login
 from ..imapsync.command import SUBFOLDER_RE
@@ -21,10 +21,14 @@ from ..models import Mailbox, Run, RunKind, RunTrigger, utcnow
 from ..providers import PROVIDERS, Security, get_provider
 from .common import csrf_protect, flash, render, require_admin, templates
 from .views_mailboxes import _presets
+from .views_restic import snapshot_choices
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 TRANSFER_KINDS = (RunKind.RESTORE, RunKind.MIGRATE)
+# Источник в мастере: последний бэкап, снимок на дату или хостер напрямую
+MODE_SNAPSHOT = "snapshot"
+MODES = (RunKind.RESTORE, MODE_SNAPSHOT, RunKind.MIGRATE)
 
 
 def default_subfolder() -> str:
@@ -35,7 +39,9 @@ def default_subfolder() -> str:
 class TransferForm:
     """Значения формы мастера (строки — как пришли из браузера)."""
 
-    mode: str = RunKind.RESTORE.value  # restore — из бэкапа, migrate — напрямую с хостера
+    # restore — из бэкапа, snapshot — из снимка restic, migrate — напрямую с хостера
+    mode: str = RunKind.RESTORE.value
+    snapshot: str = ""  # id снимка для mode=snapshot
     target: str = "same"  # same — в этот же ящик, other — в другой
     provider: str = "yandex"
     host: str = ""
@@ -55,11 +61,13 @@ class TransferForm:
         return cls(**values)
 
     @classmethod
-    def for_mailbox(cls, box: Mailbox, *, has_backup: bool) -> "TransferForm":
+    def for_mailbox(cls, box: Mailbox, *, has_backup: bool, mode: str | None = None) -> "TransferForm":
         preset = get_provider("yandex")
+        if mode not in MODES:
+            mode = RunKind.RESTORE.value if has_backup else RunKind.MIGRATE.value
         return cls(
-            mode=RunKind.RESTORE.value if has_backup else RunKind.MIGRATE.value,
-            target="same" if has_backup else "other",
+            mode=mode,
+            target="same" if mode != RunKind.MIGRATE else "other",
             host=preset.host,
             port=str(preset.port),
             security=preset.security.value,
@@ -73,7 +81,8 @@ class TransferForm:
         same = (run.target_host or "").lower() == box.host.lower() and (run.target_login or "").lower() == box.login.lower()
         provider = next((p.key for p in PROVIDERS.values() if p.host and p.host == run.target_host), "custom")
         return cls(
-            mode=str(run.kind),
+            mode=MODE_SNAPSHOT if run.source_snapshot else str(run.kind),
+            snapshot=run.source_snapshot or "",
             target="same" if same else "other",
             provider=provider,
             host=run.target_host or "",
@@ -84,13 +93,19 @@ class TransferForm:
             subfolder=run.target_subfolder or default_subfolder(),
         )
 
-    def validate(self, box: Mailbox, *, has_backup: bool) -> dict[str, str]:
+    @property
+    def kind(self) -> RunKind:
+        return RunKind.MIGRATE if self.mode == RunKind.MIGRATE else RunKind.RESTORE
+
+    def validate(self, box: Mailbox, *, has_backup: bool, snapshots: list[restic.Snapshot]) -> dict[str, str]:
         """Возвращает ошибки по полям; пустой словарь — всё верно."""
         errors = {}
-        if self.mode not in TRANSFER_KINDS:
+        if self.mode not in MODES:
             errors["mode"] = "Выберите, что делать"
         elif self.mode == RunKind.RESTORE and not has_backup:
             errors["mode"] = "У ящика ещё нет удачного бэкапа — восстанавливать нечего"
+        elif self.mode == MODE_SNAPSHOT and self.snapshot not in {s.id for s in snapshots}:
+            errors["snapshot"] = "Выберите снимок" if snapshots else "У ящика нет снимков"
 
         if self.target == "same":
             if self.mode == RunKind.MIGRATE:
@@ -127,8 +142,8 @@ class TransferForm:
             errors["placement"] = "Выберите, куда класть письма"
         return errors
 
-    def run_fields(self, box: Mailbox) -> dict:
-        """Поля получателя для Run; пароль — зашифрованный."""
+    def run_fields(self, box: Mailbox, snapshots: list[restic.Snapshot]) -> dict:
+        """Поля получателя (и снимка-источника) для Run; пароль — зашифрованный."""
         if self.target == "same":
             target = {
                 "target_host": box.host,
@@ -146,6 +161,9 @@ class TransferForm:
                 "target_password_enc": crypto.encrypt(self.password),
             }
         target["target_subfolder"] = self.subfolder if self.placement == "subfolder" else None
+        if self.mode == MODE_SNAPSHOT:
+            snap = next(s for s in snapshots if s.id == self.snapshot)
+            target["source_snapshot"], target["source_snapshot_time"] = snap.id, snap.time
         return target
 
 
@@ -157,11 +175,16 @@ def _get_box(session: Session, mailbox_id: int) -> Mailbox:
 
 
 def _page(request: Request, session: Session, box: Mailbox, form: TransferForm, *,
-          errors: dict | None = None, status_code: int = 200):
+          errors: dict | None = None, status_code: int = 200, snapshots=None):
+    snap_error = None
+    if snapshots is None:
+        snapshots, snap_error = snapshot_choices(box.id)
     return render(request, session, "mailboxes/transfer.html", {
         "box": box,
         "form": form,
         "errors": errors or {},
+        "snapshots": snapshots,
+        "snap_error": snap_error,
         "backup": last_backup(session, box.id),
         "active": active_run(session, box.id),
         "presets": _presets(),
@@ -170,14 +193,14 @@ def _page(request: Request, session: Session, box: Mailbox, form: TransferForm, 
 
 
 @router.get("/mailboxes/{mailbox_id}/transfer")
-def transfer_form(request: Request, mailbox_id: int, from_run: int | None = None,
+def transfer_form(request: Request, mailbox_id: int, from_run: int | None = None, mode: str | None = None,
                   session: Session = Depends(get_session)):
     box = _get_box(session, mailbox_id)
     prev = session.get(Run, from_run) if from_run else None
     if prev and prev.mailbox_id == box.id and prev.kind in TRANSFER_KINDS:
         form = TransferForm.from_run(prev)
     else:
-        form = TransferForm.for_mailbox(box, has_backup=last_backup(session, box.id) is not None)
+        form = TransferForm.for_mailbox(box, has_backup=last_backup(session, box.id) is not None, mode=mode)
     return _page(request, session, box, form)
 
 
@@ -186,14 +209,18 @@ async def transfer_start(request: Request, mailbox_id: int, session: Session = D
     box = _get_box(session, mailbox_id)
     form = await TransferForm.from_request(request)
     dry_run = (await request.form()).get("action") != "run"
-    if errors := form.validate(box, has_backup=last_backup(session, box.id) is not None):
+    snapshots, _ = snapshot_choices(box.id) if form.mode == MODE_SNAPSHOT else ([], None)
+    if errors := form.validate(box, has_backup=last_backup(session, box.id) is not None, snapshots=snapshots):
         return _page(request, session, box, form, errors=errors, status_code=400)
     if active_run(session, box.id):
         # Параметры не теряем: форма остаётся, наверху — ссылка на текущий запуск
         return _page(request, session, box, form, status_code=409)
 
-    run = enqueue_run(session, box, RunKind(form.mode), RunTrigger.MANUAL, dry_run=dry_run, **form.run_fields(box))
-    what = "Восстановление" if run.kind == RunKind.RESTORE else "Перенос"
+    run = enqueue_run(session, box, form.kind, RunTrigger.MANUAL, dry_run=dry_run,
+                      **form.run_fields(box, snapshots))
+    what = {RunKind.RESTORE: "Восстановление", RunKind.MIGRATE: "Перенос"}[run.kind]
+    if run.source_snapshot:
+        what += " из снимка"
     flash(request, f"{what} «{box.name}» → {run.target_login} поставлено в очередь"
                    + (" (пробный прогон, ничего не копируется)" if dry_run else ""))
     return RedirectResponse(f"/runs/{run.id}", 303)
@@ -241,7 +268,7 @@ def run_repeat(request: Request, run_id: int, session: Session = Depends(get_ses
     target = {
         name: getattr(run, name)
         for name in ("target_host", "target_port", "target_security", "target_login",
-                     "target_password_enc", "target_subfolder")
+                     "target_password_enc", "target_subfolder", "source_snapshot", "source_snapshot_time")
     }
     new = enqueue_run(session, run.mailbox, RunKind(run.kind), RunTrigger.MANUAL, dry_run=False, **target)
     # Пароль перешёл в новый запуск — у пробного он больше не нужен

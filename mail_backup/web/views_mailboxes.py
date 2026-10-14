@@ -15,7 +15,7 @@ from ..imapcheck import check_login
 from ..jobs import active_run, enqueue_run
 from ..models import Mailbox, RunKind, RunTrigger
 from ..providers import PROVIDERS, Security, get_provider
-from ..worker import parse_schedule
+from ..schedule import parse_schedule
 from .common import csrf_protect, flash, render, require_admin, templates
 from .dashboard import mailbox_overview
 

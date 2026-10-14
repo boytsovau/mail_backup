@@ -23,12 +23,16 @@ def _write_secret(path: Path, data: bytes) -> None:
 
 
 def ensure_keys() -> None:
-    """Создаёт ключ шифрования и ключ сессий, если их ещё нет."""
+    """Создаёт ключ шифрования, ключ сессий и пароль restic, если их ещё нет."""
     settings = get_settings()
     if not settings.fernet_key_file.exists():
         _write_secret(settings.fernet_key_file, Fernet.generate_key())
     if not settings.session_key_file.exists():
         _write_secret(settings.session_key_file, secrets.token_urlsafe(48).encode())
+    # Пароль репозиториев restic. Без него снимки не расшифровать — админ
+    # сохраняет его вне сервера (показывается на странице «Снимки»)
+    if not settings.restic_password_file.exists():
+        _write_secret(settings.restic_password_file, secrets.token_urlsafe(32).encode())
 
 
 @lru_cache

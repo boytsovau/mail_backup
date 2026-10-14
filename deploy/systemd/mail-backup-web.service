@@ -8,6 +8,8 @@ Type=simple
 User=@SERVICE_USER@
 Group=@SERVICE_USER@
 WorkingDirectory=/
+# ssh (проверка серверов выгрузки) и restic ищут домашний каталог
+Environment=HOME=@DATA_DIR@
 # Только localhost: снаружи панель доступна через nginx (HTTPS)
 ExecStart=@APP_DIR@/.venv/bin/uvicorn mail_backup.main:app --host 127.0.0.1 --port @WEB_PORT@ --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header
 Restart=on-failure

@@ -51,6 +51,9 @@ class Job:
     exclude_folders: str | None = None
     # Восстановление/перенос: положить всю иерархию источника в эту папку получателя
     subfolder2: str | None = None
+    # Бэкап: удалять из зеркала то, что удалено на хостере. Только когда история
+    # хранится в снимках restic — иначе удалённое пропало бы и из бэкапа
+    mirror_deletions: bool = True
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -96,9 +99,10 @@ def build_command(
     ]
 
     if job.kind == RunKind.BACKUP:
-        # Бэкап — зеркало ящика: удалённое на хостере удаляется и из зеркала.
-        # История (в т.ч. удалённые письма) хранится в снимках restic.
-        cmd += ["--delete2", "--delete2folders"]
+        if job.mirror_deletions:
+            # Зеркало ящика: удалённое на хостере удаляется и из зеркала.
+            # История (в т.ч. удалённые письма) хранится в снимках restic.
+            cmd += ["--delete2", "--delete2folders"]
     elif job.kind == RunKind.ESTIMATE:
         # Только размеры папок (EXAMINE + FETCH размеров), письма не копируются
         cmd.append("--justfoldersizes")

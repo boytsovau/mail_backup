@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Задача restic #{{ task.id }}{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <h1>{{ TASK_LABELS[task.kind] | capitalize }} #{{ task.id }}{% if task.remote %}: {{ task.remote.name }}{% endif %}</h1>
+    <a class="button" href="/restic">К снимкам</a>
+  </div>
+  {% include "_restic_task_live.html" %}
+</section>
+{% endblock %}

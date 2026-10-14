@@ -72,7 +72,8 @@
       </label>
       <label>Хранить историю, дней
         <input name="retention_days" value="{{ form.retention_days }}" inputmode="numeric" size="6">
-        <span class="hint">Сколько дней хранить снимки restic (в т.ч. удалённые на хостере письма). 0 — бессрочно. Заработает вместе со снимками (этап 6).</span>
+        <span class="hint">Сколько дней хранить снимки restic — в том числе письма, удалённые на хостере. 0 — бессрочно.
+          Действует, когда <a href="/restic">снимки</a> включены.</span>
         {{ field_error(errors, 'retention_days') }}
       </label>
       <label>Исключить папки (регулярное выражение)
