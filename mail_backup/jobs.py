@@ -1,5 +1,6 @@
 """Выполнение запуска (Run): связка БД и обёртки imapsync."""
 
+import json
 import os
 import time
 from datetime import datetime
@@ -65,7 +66,8 @@ def run_target_endpoint(run: Run) -> Endpoint:
 def build_job(run: Run, *, just_login: bool = False) -> Job:
     box = run.mailbox
     match run.kind:
-        case RunKind.BACKUP:
+        case RunKind.BACKUP | RunKind.ESTIMATE:
+            # Оценке тоже нужен host2 — imapsync всегда подключается к обеим сторонам
             source, target = mailbox_endpoint(box), local_endpoint(box)
             extra = list(get_provider(box.provider).extra_args_source)
         case RunKind.RESTORE:
@@ -96,11 +98,13 @@ def active_run(session: Session, mailbox_id: int) -> Run | None:
     ).first()
 
 
-def enqueue_backup(session: Session, box: Mailbox, trigger: RunTrigger, *, dry_run: bool = False) -> Run:
-    """Ставит бэкап в очередь; если ящик уже в работе — возвращает текущий запуск."""
+def enqueue_run(
+    session: Session, box: Mailbox, kind: RunKind, trigger: RunTrigger, *, dry_run: bool = False
+) -> Run:
+    """Ставит запуск в очередь; если ящик уже в работе — возвращает текущий запуск."""
     if existing := active_run(session, box.id):
         return existing
-    run = Run(kind=RunKind.BACKUP, mailbox_id=box.id, trigger=trigger, dry_run=dry_run)
+    run = Run(kind=kind, mailbox_id=box.id, trigger=trigger, dry_run=dry_run)
     session.add(run)
     session.commit()
     return run
@@ -136,7 +140,7 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
         session.commit()
 
     try:
-        if run.kind in (RunKind.BACKUP, RunKind.RESTORE):
+        if run.kind in (RunKind.BACKUP, RunKind.RESTORE, RunKind.ESTIMATE):
             check_backup_storage()
             # Учётка ящика в Dovecot должна существовать до подключения к нему
             dovecot.sync_users(session)
@@ -160,6 +164,8 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
         run.status = status_from_exit(result.exit_code, cancelled=run.cancel_requested)
         for name, value in result.stats.as_dict().items():
             setattr(run, name, value)
+        if result.stats.folders:
+            run.folder_stats = json.dumps(result.stats.folders_as_dicts(), ensure_ascii=False)
         if result.last_progress:
             run.progress_done = result.last_progress.done
             run.progress_total = result.last_progress.msgs_total

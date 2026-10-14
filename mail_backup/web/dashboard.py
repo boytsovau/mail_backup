@@ -12,10 +12,11 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import app_settings, auth
+from .. import app_settings, auth, storage_estimate
 from ..config import get_settings
 from ..db import get_session
-from ..models import Mailbox, Run, RunKind, RunStatus
+from ..jobs import active_run, enqueue_run
+from ..models import Mailbox, Run, RunKind, RunStatus, RunTrigger
 from ..worker import next_slot, parse_schedule, worker_alive
 from .common import csrf_protect, flash, render, require_admin
 
@@ -75,6 +76,30 @@ def dashboard(request: Request, session: Session = Depends(get_session)):
         "disk": disk_usage(),
         "worker_ok": worker_alive(session),
     })
+
+
+@router.get("/storage")
+def storage_page(request: Request, session: Session = Depends(get_session)):
+    """Сколько места нужно под бэкапы — по размерам ящиков на хостере."""
+    active = {run.mailbox_id: run for run in session.scalars(select(Run).where(Run.status.in_(ACTIVE)))}
+    return render(request, session, "storage.html", {
+        "plan": storage_estimate.plan(session),
+        "active": active,
+        "disk": disk_usage(),
+        "backup_mounted": os.path.ismount(get_settings().backup_root),
+        "coef": storage_estimate,
+    })
+
+
+@router.post("/storage/estimate-all", dependencies=[Depends(csrf_protect)])
+def storage_estimate_all(request: Request, session: Session = Depends(get_session)):
+    queued = 0
+    for box in session.scalars(select(Mailbox)):
+        if active_run(session, box.id) is None:
+            enqueue_run(session, box, RunKind.ESTIMATE, RunTrigger.MANUAL)
+            queued += 1
+    flash(request, f"Оценка поставлена в очередь для ящиков: {queued}. Страница обновится сама.")
+    return RedirectResponse("/storage", 303)
 
 
 @router.get("/settings")

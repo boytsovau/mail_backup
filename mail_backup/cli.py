@@ -117,16 +117,19 @@ def cmd_backup(args: argparse.Namespace) -> None:
         box = session.get(Mailbox, args.mailbox_id)
         if box is None:
             sys.exit(f"Ящик #{args.mailbox_id} не найден")
-        run = Run(kind=RunKind.BACKUP, mailbox_id=box.id, trigger=RunTrigger.MANUAL, dry_run=args.dry)
+        kind = RunKind.ESTIMATE if args.estimate else RunKind.BACKUP
+        run = Run(kind=kind, mailbox_id=box.id, trigger=RunTrigger.MANUAL, dry_run=args.dry)
         session.add(run)
         session.commit()
-        print(f"Запуск #{run.id}: бэкап {box.login}, лог пишется в каталог {get_settings().logs_dir}")
+        print(f"Запуск #{run.id}: {kind} {box.login}, лог пишется в каталог {get_settings().logs_dir}")
         run = execute_run(session, run.id, just_login=args.check)
         print(f"Статус: {run.status} (код выхода {run.exit_code})")
         if run.error_message:
             print(f"Ошибка: {run.error_message}")
         print(f"Лог: {run.log_path}")
-        if not args.check:
+        if args.estimate:
+            print(f"В ящике: {run.host1_messages} писем, {run.host1_bytes} байт")
+        elif not args.check:
             print(
                 f"Писем перенесено: {run.messages_transferred}, пропущено: {run.messages_skipped}, "
                 f"байт: {run.bytes_transferred}, ошибок: {run.errors_count}"
@@ -173,6 +176,7 @@ def main() -> None:
     p.add_argument("mailbox_id", type=int)
     p.add_argument("--dry", action="store_true", help="пробный прогон без копирования")
     p.add_argument("--check", action="store_true", help="только проверить вход на обе стороны")
+    p.add_argument("--estimate", action="store_true", help="только оценить объём (ничего не копировать)")
     p.set_defaults(func=cmd_backup)
 
     sub.add_parser("dovecot-sync", help="пересобрать файл учёток Dovecot").set_defaults(func=cmd_dovecot_sync)

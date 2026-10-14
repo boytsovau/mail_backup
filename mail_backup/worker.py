@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from . import app_settings
 from .config import get_settings
 from .db import new_session
-from .jobs import active_run, enqueue_backup, execute_run
+from .jobs import active_run, enqueue_run, execute_run
 from .models import Mailbox, Run, RunKind, RunStatus, RunTrigger, Setting, utcnow
 
 log = logging.getLogger("mail_backup.worker")
@@ -100,7 +100,7 @@ def enqueue_due_backups(session: Session, prefs: app_settings.AppSettings, now: 
             )
         ).first()
         if already is None and active_run(session, box.id) is None:
-            created.append(enqueue_backup(session, box, RunTrigger.SCHEDULE))
+            created.append(enqueue_run(session, box, RunKind.BACKUP, RunTrigger.SCHEDULE))
             log.info("Ящик #%s: бэкап по расписанию (%s)", box.id, slot.strftime("%H:%M"))
     return created
 

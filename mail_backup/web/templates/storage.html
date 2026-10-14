@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status, csrf with context %}
+{% block title %}Оценка места{% endblock %}
+{% block content %}
+{# Пока идут оценки, страница обновляется сама #}
+<div id="storage" {% if active %}hx-get="/storage" hx-trigger="every 4s" hx-select="#storage" hx-swap="outerHTML"{% endif %}>
+
+<section class="card">
+  <div class="card-head">
+    <h1>Сколько места нужно под бэкапы</h1>
+    {% if plan.rows %}
+    <form method="post" action="/storage/estimate-all">
+      {{ csrf() }}
+      <button class="primary">Оценить все ящики</button>
+    </form>
+    {% endif %}
+  </div>
+  <p class="hint">
+    Оценка ничего не копирует: imapsync подключается к ящику, считает письма и их размер
+    по каждой папке и отключается. На хостере ничего не меняется.
+  </p>
+
+  {% if not plan.rows %}
+    <p class="muted">Ящиков пока нет. <a href="/mailboxes/new">Добавьте ящик</a> — бэкап по расписанию
+      можно выключить, чтобы сначала только оценить объём.</p>
+  {% else %}
+
+  <div class="tiles tiles-plan">
+    <div class="tile">
+      <div class="tile-label">Почта на хостерах</div>
+      <div class="tile-value">{{ plan.bytes | size }}</div>
+      <div class="tile-sub">{{ plan.messages }} писем</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Зеркало (Maildir)</div>
+      <div class="tile-value">≈ {{ plan.mirror_bytes | size }}</div>
+      <div class="tile-sub">копия, из которой восстанавливаем</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">История restic</div>
+      <div class="tile-value">≈ {{ plan.restic_bytes | size }}</div>
+      <div class="tile-sub">первый снимок; столько же на каждом удалённом сервере</div>
+    </div>
+    <div class="tile tile-accent">
+      <div class="tile-label">Рекомендуемый диск</div>
+      <div class="tile-value">≥ {{ plan.recommended_bytes | size }}</div>
+      <div class="tile-sub">с запасом {{ ((coef.GROWTH_RESERVE - 1) * 100) | round | int }}% на рост и историю</div>
+    </div>
+  </div>
+
+  {% if plan.unknown %}
+    <div class="flash flash-warn">
+      Не оценены: {{ plan.unknown | map(attribute='box.name') | join(', ') }} — итог занижен.
+    </div>
+  {% endif %}
+
+  {% if disk %}
+    <p>
+      Сейчас под бэкапы{% if not backup_mounted %} (системный диск){% endif %}:
+      всего {{ disk.total | size }}, свободно {{ disk.free | size }} —
+      {# Отдельный диск целиком под бэкапы — сравниваем его размер;
+         системный диск делим с ОС — сравниваем свободное место #}
+      {% set available = disk.total if backup_mounted else disk.free %}
+      {% if available >= plan.recommended_bytes %}
+        <strong class="text-ok">места хватает</strong>
+      {% else %}
+        <strong class="text-error">{{ 'диск' if backup_mounted else 'свободного места' }} меньше рекомендуемого</strong>
+      {% endif %}
+    </p>
+  {% endif %}
+  {% endif %}
+</section>
+
+{% if plan.rows %}
+<section class="card">
+  <h2>По ящикам</h2>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Ящик</th><th>Писем</th><th>Объём</th><th>Нужно под бэкап</th><th>Измерено</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for row in plan.rows %}
+      <tr>
+        <td><a href="/mailboxes/{{ row.box.id }}/edit"><strong>{{ row.box.name }}</strong></a>
+          <div class="muted small">{{ row.box.login }}</div></td>
+        {% if row.known %}
+          <td>{{ row.messages }}</td>
+          <td>{{ row.bytes | size }}</td>
+          <td>≈ {{ coef.recommended_size(row.messages, row.bytes) | size }}</td>
+          <td><a href="/runs/{{ row.run.id }}">{{ dt(row.measured_at) }}</a>
+            <div class="muted small">{{ KIND_LABELS[row.run.kind] }}</div></td>
+        {% else %}
+          <td colspan="4" class="muted">ещё не оценён</td>
+        {% endif %}
+        <td class="actions">
+          {% if active.get(row.box.id) %}
+            <a href="/runs/{{ active[row.box.id].id }}">{{ status(active[row.box.id]) }}</a>
+          {% else %}
+            <form method="post" action="/mailboxes/{{ row.box.id }}/estimate">
+              {{ csrf() }}
+              <button class="small">Оценить</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Как считается</h2>
+  <ul class="hint-list">
+    <li><strong>Зеркало</strong> = объём писем + {{ (coef.DOVECOT_OVERHEAD * 100) | round | int }}% на индексы Dovecot
+      + в среднем полблока файловой системы ({{ coef.FS_BLOCK // 2 }} байт) на письмо — в Maildir каждое письмо отдельный файл.</li>
+    <li><strong>restic</strong> ≈ {{ (coef.RESTIC_RATIO * 100) | round | int }}% от объёма писем: текст сжимается хорошо,
+      вложения (PDF, фото, архивы) — почти нет. Следующие снимки добавляют только новые письма.</li>
+    <li><strong>Рекомендуемый диск</strong> = (зеркало + restic) × {{ coef.GROWTH_RESERVE }}: запас на рост ящиков
+      и на удалённые письма, которые хранятся в истории весь срок хранения.</li>
+    <li>Это оценка до первого бэкапа. Реальный размер появится после бэкапа и снимков restic.</li>
+  </ul>
+</section>
+{% endif %}
+</div>
+{% endblock %}

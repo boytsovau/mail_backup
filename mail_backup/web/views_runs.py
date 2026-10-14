@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import storage_estimate
 from ..db import get_session
 from ..models import Mailbox, Run, RunStatus
 from .common import csrf_protect, flash, render, require_admin
@@ -23,6 +24,17 @@ def _get_run(session: Session, run_id: int) -> Run:
     if run is None:
         raise HTTPException(404, "Запуск не найден")
     return run
+
+
+def run_context(run: Run) -> dict:
+    ctx = {"run": run, "log": log_tail(run), "folders": storage_estimate.folders_of(run)}
+    if run.host1_bytes is not None and run.host1_messages is not None:
+        ctx["estimate"] = {
+            "mirror": storage_estimate.mirror_size(run.host1_messages, run.host1_bytes),
+            "restic": storage_estimate.restic_size(run.host1_bytes),
+            "recommended": storage_estimate.recommended_size(run.host1_messages, run.host1_bytes),
+        }
+    return ctx
 
 
 def log_tail(run: Run) -> str:
@@ -62,14 +74,14 @@ def run_list(request: Request, mailbox: int | None = None, page: int = 1, sessio
 @router.get("/{run_id}")
 def run_detail(request: Request, run_id: int, session: Session = Depends(get_session)):
     run = _get_run(session, run_id)
-    return render(request, session, "runs/detail.html", {"run": run, "log": log_tail(run)})
+    return render(request, session, "runs/detail.html", run_context(run))
 
 
 @router.get("/{run_id}/live")
 def run_live(request: Request, run_id: int, session: Session = Depends(get_session)):
     """Фрагмент для htmx: статус, прогресс, статистика и лог. Опрос, пока запуск активен."""
     run = _get_run(session, run_id)
-    return render(request, session, "runs/_live.html", {"run": run, "log": log_tail(run), "flashes": []})
+    return render(request, session, "runs/_live.html", run_context(run) | {"flashes": []})
 
 
 @router.post("/{run_id}/cancel", dependencies=[Depends(csrf_protect)])

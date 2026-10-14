@@ -111,7 +111,12 @@ STATUS_LABELS = {
     RunStatus.FAILED: "сбой",
     RunStatus.CANCELLED: "отменён",
 }
-KIND_LABELS = {RunKind.BACKUP: "бэкап", RunKind.RESTORE: "восстановление", RunKind.MIGRATE: "перенос"}
+KIND_LABELS = {
+    RunKind.BACKUP: "бэкап",
+    RunKind.RESTORE: "восстановление",
+    RunKind.MIGRATE: "перенос",
+    RunKind.ESTIMATE: "оценка объёма",
+}
 TRIGGER_LABELS = {RunTrigger.MANUAL: "вручную", RunTrigger.SCHEDULE: "по расписанию"}
 
 templates.env.globals.update(

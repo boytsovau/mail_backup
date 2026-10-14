@@ -97,6 +97,11 @@ main.narrow { max-width: 440px; margin-top: 10vh; }
 .meter { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; margin-top: .4rem; }
 .meter > div { height: 100%; background: var(--accent); }
 .meter > div.meter-warn { background: var(--error); }
+.tile-accent { border-color: var(--accent); }
+.tiles-plan { margin: 1rem 0; }
+.hint-list { color: var(--muted); font-size: .9rem; padding-left: 1.2rem; margin: 0; }
+.hint-list li { margin-bottom: .4rem; }
+table.folders td:not(:first-child), table.folders th:not(:first-child) { text-align: right; white-space: nowrap; }
 
 /* --- Таблицы ------------------------------------------------------------ */
 .table-wrap { overflow-x: auto; }
@@ -200,6 +205,7 @@ pre.log { max-height: 480px; }
 .muted { color: var(--muted); }
 .small { font-size: .8rem; }
 .text-error { color: var(--error); }
+.text-ok { color: var(--ok); }
 .pager { display: flex; gap: 1rem; align-items: center; justify-content: center; margin-top: 1rem; }
 
 @media (max-width: 800px) {

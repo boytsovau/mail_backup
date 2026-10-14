@@ -93,6 +93,10 @@
   {% if box %}
   <hr>
   <div class="danger-zone">
+    <form method="post" action="/mailboxes/{{ box.id }}/estimate" class="inline">
+      {{ csrf() }}
+      <button title="Посчитать письма и объём по папкам, ничего не копируя">Оценить объём</button>
+    </form>
     <form method="post" action="/mailboxes/{{ box.id }}/backup" class="inline">
       {{ csrf() }}
       <input type="hidden" name="dry_run" value="1">

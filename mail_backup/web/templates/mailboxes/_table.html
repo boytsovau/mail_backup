@@ -45,6 +45,10 @@
       </td>
       <td class="actions">
         {% if not row.active %}
+        <form method="post" action="/mailboxes/{{ box.id }}/estimate">
+          {{ csrf() }}
+          <button class="small" title="Посчитать письма и объём на хостере, ничего не копируя">Оценить</button>
+        </form>
         <form method="post" action="/mailboxes/{{ box.id }}/backup">
           {{ csrf() }}
           <button class="small primary" title="Запустить бэкап сейчас">▶ Бэкап</button>

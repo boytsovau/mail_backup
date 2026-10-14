@@ -25,12 +25,35 @@
     <div class="flash flash-error">{{ run.error_message }}</div>
   {% endif %}
 
+  {% if run.kind == 'estimate' and estimate %}
+  <div class="tiles tiles-plan">
+    <div class="tile">
+      <div class="tile-label">В ящике</div>
+      <div class="tile-value">{{ run.host1_bytes | size }}</div>
+      <div class="tile-sub">{{ run.host1_messages }} писем</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Зеркало (Maildir)</div>
+      <div class="tile-value">≈ {{ estimate.mirror | size }}</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">История restic</div>
+      <div class="tile-value">≈ {{ estimate.restic | size }}</div>
+    </div>
+    <div class="tile tile-accent">
+      <div class="tile-label">Нужно под этот ящик</div>
+      <div class="tile-value">≥ {{ estimate.recommended | size }}</div>
+      <div class="tile-sub"><a href="/storage">итог по всем ящикам</a></div>
+    </div>
+  </div>
+  {% endif %}
+
   <dl class="facts">
     <dt>Создан</dt><dd>{{ dt(run.created_at) }}</dd>
     <dt>Начат</dt><dd>{{ dt(run.started_at) }}</dd>
     <dt>Завершён</dt><dd>{{ dt(run.finished_at) }}</dd>
     <dt>Длительность</dt><dd>{{ run.duration_seconds | duration }}</dd>
-    {% if not active %}
+    {% if not active and run.kind != 'estimate' %}
     <dt>Писем перенесено</dt><dd>{{ run.messages_transferred if run.messages_transferred is not none else '—' }}</dd>
     <dt>Писем пропущено</dt><dd title="Уже были в бэкапе">{{ run.messages_skipped if run.messages_skipped is not none else '—' }}</dd>
     <dt>Перенесено</dt><dd>{{ run.bytes_transferred | size }}</dd>
@@ -41,6 +64,21 @@
     <dt>Код выхода</dt><dd>{{ run.exit_code if run.exit_code is not none else '—' }}</dd>
     {% endif %}
   </dl>
+
+  {% if folders %}
+    <h2>Папки источника</h2>
+    <div class="table-wrap">
+    <table class="folders">
+      <thead><tr><th>Папка</th><th>Писем</th><th>Объём</th><th>Самое большое письмо</th></tr></thead>
+      <tbody>
+      {% for f in folders %}
+        <tr><td>{{ f.name }}</td><td>{{ f.messages }}</td><td>{{ f.size | size }}</td><td>{{ f.biggest | size }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="hint">Ненужные папки (например, «Спам») можно исключить в настройках ящика.</p>
+  {% endif %}
 
   {% if log %}
     <h2>Лог imapsync</h2>

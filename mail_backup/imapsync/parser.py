@@ -10,7 +10,7 @@
 """
 
 import re
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 
 from ..models import RunStatus
 
@@ -31,6 +31,29 @@ _STAT_RES: dict[str, re.Pattern[str]] = {
     "host1_bytes": re.compile(r"^Host1 Total size:\s*(\d+) bytes"),
     "host2_bytes": re.compile(r"^Host2 Total size:\s*(\d+) bytes"),
 }
+
+# Строка размера папки источника:
+#   Host1 folder     2/9 [&BB4EQgQ-] = [Отправленные]   Size:  2000 Messages:  1 Biggest:  2000
+_FOLDER_RE = re.compile(
+    r"^Host1 folder\s+\d+/\d+\s+(?P<name>.*?)\s+Size:\s*(?P<size>\d+)"
+    r"\s+Messages:\s*(?P<messages>\d+)\s+Biggest:\s*(?P<biggest>\d+)"
+)
+
+
+def _folder_name(raw: str) -> str:
+    """«[&BB4E...-] = [Отправленные]» → «Отправленные»; «[INBOX]» → «INBOX»."""
+    if "] = [" in raw:
+        raw = raw.split("] = [", 1)[1]
+    return raw.strip().removeprefix("[").removesuffix("]")
+
+
+@dataclass
+class FolderSize:
+    name: str
+    size: int
+    messages: int
+    biggest: int
+
 
 # Коды выхода imapsync (см. Readonly my $EXIT_* в исходнике)
 EXIT_OK = 0
@@ -63,7 +86,13 @@ class Stats:
     host2_bytes: int | None = None
 
     def as_dict(self) -> dict:
-        return {f.name: getattr(self, f.name) for f in fields(self)}
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name != "folders"}
+
+    # Размеры папок источника (печатаются в начале и, при --foldersizesatend, в конце)
+    folders: list[FolderSize] = field(default_factory=list)
+
+    def folders_as_dicts(self) -> list[dict]:
+        return [asdict(f) for f in self.folders]
 
 
 def parse_progress(line: str) -> Progress | None:
@@ -86,6 +115,13 @@ class OutputParser:
         if progress := parse_progress(line):
             self.last_progress = progress
             return progress
+        if m := _FOLDER_RE.match(line):
+            folder = FolderSize(
+                _folder_name(m["name"]), int(m["size"]), int(m["messages"]), int(m["biggest"])
+            )
+            # Повтор папки (размеры в конце работы) заменяет старое значение
+            self.stats.folders = [f for f in self.stats.folders if f.name != folder.name] + [folder]
+            return None
         for name, regex in _STAT_RES.items():
             if m := regex.match(line):
                 value = m.group(1)

@@ -196,3 +196,40 @@ def test_system_page(logged_in):
 
 def test_unknown_page_404(logged_in):
     assert logged_in.get("/runs/999").status_code == 404
+
+
+def test_estimate_button_and_storage_page(logged_in):
+    add_mailbox_via_form(logged_in)
+    with new_session() as session:
+        box_id = session.query(Mailbox).one().id
+    page = logged_in.get("/storage")
+    assert "ещё не оценён" in page.text
+
+    r = logged_in.post(f"/mailboxes/{box_id}/estimate", data={"csrf_token": csrf(logged_in)}, follow_redirects=False)
+    assert r.status_code == 303
+    with new_session() as session:
+        run = session.query(Run).one()
+        assert run.kind == "estimate" and run.status == RunStatus.QUEUED
+        # Имитируем завершённую оценку
+        run.status, run.host1_messages, run.host1_bytes = RunStatus.SUCCESS, 1000, 50 * 1024**2
+        run.folder_stats = '[{"name": "INBOX", "size": 52428800, "messages": 1000, "biggest": 1048576}]'
+        session.commit()
+        run_id = run.id
+
+    page = logged_in.get("/storage")
+    assert "50.0 МБ" in page.text and "Рекомендуемый диск" in page.text
+    detail = logged_in.get(f"/runs/{run_id}")
+    assert "Папки источника" in detail.text and "INBOX" in detail.text
+
+
+def test_estimate_all_skips_busy_mailboxes(logged_in):
+    add_mailbox_via_form(logged_in)
+    add_mailbox_via_form(logged_in, login="second@yandex.ru", name="Второй")
+    with new_session() as session:
+        first = session.query(Mailbox).filter_by(login="user@yandex.ru").one()
+        session.add(Run(kind="backup", mailbox_id=first.id))
+        session.commit()
+    logged_in.post("/storage/estimate-all", data={"csrf_token": csrf(logged_in)})
+    with new_session() as session:
+        kinds = sorted(r.kind for r in session.query(Run))
+        assert kinds == ["backup", "estimate"]

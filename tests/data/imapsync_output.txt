@@ -1,6 +1,9 @@
 Here is imapsync 2.290 on host srv, a linux system with 3.8/7.6 free GiB of RAM
 Host1: IMAP server [imap.yandex.ru] port [993] user [user@yandex.ru]
 Host2: IMAP server [127.0.0.1] port [143] user [user@yandex.ru]
+++++ Calculating sizes of 2 folders on Host1
+Host1 folder     1/2 [INBOX]                             Size:      3300 Messages:     2 Biggest:      2100
+Host1 folder     2/2 [&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-] = [Отправленные] Size:      2000 Messages:     1 Biggest:      2000
 Host1 Nb messages:                  3 messages
 Host2 Nb messages:                  0 messages
 Host1 Total size:                5300 bytes (5.176 KiB)

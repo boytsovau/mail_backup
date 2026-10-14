@@ -12,8 +12,8 @@ from .. import crypto, dovecot
 from ..config import get_settings
 from ..db import get_session
 from ..imapcheck import check_login
-from ..jobs import active_run, enqueue_backup
-from ..models import Mailbox, RunTrigger
+from ..jobs import active_run, enqueue_run
+from ..models import Mailbox, RunKind, RunTrigger
 from ..providers import PROVIDERS, Security, get_provider
 from ..worker import parse_schedule
 from .common import csrf_protect, flash, render, require_admin, templates
@@ -157,7 +157,8 @@ async def mailbox_create(request: Request, session: Session = Depends(get_sessio
     session.add(box)
     session.commit()
     dovecot.sync_users(session)
-    flash(request, f"Ящик «{box.name}» добавлен")
+    flash(request, f"Ящик «{box.name}» добавлен. Чтобы узнать, сколько места нужно под бэкап, "
+                   "нажмите «Оценить» — письма при этом не копируются.")
     return RedirectResponse("/mailboxes", 303)
 
 
@@ -221,10 +222,23 @@ async def mailbox_backup(request: Request, mailbox_id: int, session: Session = D
     box = _get_box(session, mailbox_id)
     dry_run = (await request.form()).get("dry_run") == "1"
     existing = active_run(session, box.id)
-    run = enqueue_backup(session, box, RunTrigger.MANUAL, dry_run=dry_run)
+    run = enqueue_run(session, box, RunKind.BACKUP, RunTrigger.MANUAL, dry_run=dry_run)
     if existing:
         flash(request, "Этот ящик уже в работе — открыт текущий запуск", "warn")
     else:
         flash(request, f"Бэкап «{box.name}» поставлен в очередь" + (" (пробный прогон)" if dry_run else ""))
+    return RedirectResponse(f"/runs/{run.id}", 303)
+
+
+@router.post("/{mailbox_id}/estimate", dependencies=[Depends(csrf_protect)])
+def mailbox_estimate(request: Request, mailbox_id: int, session: Session = Depends(get_session)):
+    """Оценка объёма: только подсчёт писем и размеров, ничего не копируется."""
+    box = _get_box(session, mailbox_id)
+    existing = active_run(session, box.id)
+    run = enqueue_run(session, box, RunKind.ESTIMATE, RunTrigger.MANUAL)
+    if existing:
+        flash(request, "Этот ящик уже в работе — открыт текущий запуск", "warn")
+    else:
+        flash(request, f"Оценка объёма «{box.name}» поставлена в очередь")
     return RedirectResponse(f"/runs/{run.id}", 303)
 

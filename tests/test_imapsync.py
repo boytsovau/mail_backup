@@ -144,3 +144,33 @@ def test_prod_refuses_backup_without_mounted_disk(fake_imapsync, monkeypatch):
         assert "не смонтирован" in run.error_message
     # imapsync даже не запускался
     assert not fake_imapsync.exists()
+
+
+def test_parser_reads_folder_sizes():
+    parser = OutputParser()
+    for line in SAMPLE.read_text(encoding="utf-8").splitlines():
+        parser.feed(line)
+    assert [(f.name, f.size, f.messages, f.biggest) for f in parser.stats.folders] == [
+        ("INBOX", 3300, 2, 2100),
+        ("Отправленные", 2000, 1, 2000),
+    ]
+
+
+def test_estimate_command_copies_nothing(tmp_path):
+    job = Job(RunKind.ESTIMATE, ep(), Endpoint("127.0.0.1", 143, Security.PLAIN, "u@x.ru", "l"))
+    cmd = build_command(job, imapsync_bin="imapsync", passfile1=tmp_path / "p1", passfile2=tmp_path / "p2", tmpdir=tmp_path)
+    assert "--justfoldersizes" in cmd and "--noexpunge1" in cmd
+    assert not {"--delete2", "--delete2folders", "--automap"} & set(cmd)
+
+
+def test_execute_estimate_run_saves_folders(fake_imapsync):
+    with new_session() as session:
+        box = add_mailbox(session)
+        run = Run(kind=RunKind.ESTIMATE, mailbox_id=box.id)
+        session.add(run)
+        session.commit()
+        run = execute_run(session, run.id)
+        assert run.status == RunStatus.SUCCESS
+        assert (run.host1_messages, run.host1_bytes) == (3, 5300)
+        assert json.loads(run.folder_stats)[1]["name"] == "Отправленные"
+        assert "--justfoldersizes" in json.loads(fake_imapsync.read_text())["args"]

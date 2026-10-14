@@ -23,6 +23,8 @@ class RunKind(StrEnum):
     BACKUP = "backup"  # хостер → локальный Dovecot
     RESTORE = "restore"  # локальный Dovecot → любой ящик
     MIGRATE = "migrate"  # хостер → другой хостер напрямую
+    # Оценка объёма: imapsync --justfoldersizes, только подсчёт писем и размеров по папкам
+    ESTIMATE = "estimate"
 
 
 class RunTrigger(StrEnum):
@@ -124,6 +126,8 @@ class Run(Base):
     host2_messages: Mapped[int | None]
     host2_bytes: Mapped[int | None]
     duration_seconds: Mapped[float | None]
+    # Размеры папок источника, JSON: [{"name", "size", "messages", "biggest"}, ...]
+    folder_stats: Mapped[str | None] = mapped_column(Text)
 
 
 class Setting(Base):

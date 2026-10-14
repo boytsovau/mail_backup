@@ -90,6 +90,9 @@ def build_command(
         # Бэкап — зеркало ящика: удалённое на хостере удаляется и из зеркала.
         # История (в т.ч. удалённые письма) хранится в снимках restic.
         cmd += ["--delete2", "--delete2folders"]
+    elif job.kind == RunKind.ESTIMATE:
+        # Только размеры папок (EXAMINE + FETCH размеров), письма не копируются
+        cmd.append("--justfoldersizes")
     else:
         # Почтовые серверы называют «Отправленные», «Спам» и т.п. по-разному
         cmd.append("--automap")
