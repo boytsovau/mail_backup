@@ -1,16 +1,22 @@
 import json
 import os
+import sqlite3
 import stat
+import sys
+import time
 from pathlib import Path
 
 import pytest
 from conftest import SAMPLE, add_mailbox
 
-from mail_backup import crypto, dovecot
+from sqlalchemy.exc import OperationalError
+
+from mail_backup import crypto, dovecot, jobs
 from mail_backup.config import get_settings
 from mail_backup.db import new_session
 from mail_backup.imapsync.command import Endpoint, Job, UnsafeCommandError, build_command
 from mail_backup.imapsync.parser import OutputParser, status_from_exit
+from mail_backup.imapsync.runner import run_imapsync
 from mail_backup.jobs import execute_run
 from mail_backup.models import Mailbox, Run, RunKind, RunStatus
 from mail_backup.providers import Security
@@ -91,6 +97,58 @@ def test_execute_backup_run(fake_imapsync):
         assert "Detected 0 errors" in Path(run.log_path).read_text(encoding="utf-8")
         users = get_settings().dovecot_users_file.read_text()
         assert users.startswith("user@yandex.ru:{SSHA512}")
+
+
+def test_db_locked_while_saving_progress_does_not_fail_run(fake_imapsync, monkeypatch):
+    """«database is locked» при записи процентов не обрывает бэкап: прогресс допишется позже."""
+    monkeypatch.setattr(jobs, "PROGRESS_SAVE_INTERVAL", 0)
+    with new_session() as session:
+        box = add_mailbox(session)
+        run = Run(kind=RunKind.BACKUP, mailbox_id=box.id)
+        session.add(run)
+        session.commit()
+
+        real_commit, failed = session.commit, []
+
+        def flaky_commit():
+            # Первая запись прогресса натыкается на чужую блокировку
+            if run.progress_done is not None and not failed:
+                failed.append(run.progress_done)
+                raise OperationalError("UPDATE runs", {}, sqlite3.OperationalError("database is locked"))
+            real_commit()
+
+        monkeypatch.setattr(session, "commit", flaky_commit)
+        run = execute_run(session, run.id)
+
+        assert failed == [1]
+        assert run.status == RunStatus.SUCCESS, run.error_message
+        assert (run.progress_done, run.progress_total) == (3, 3)
+
+
+def test_runner_kills_imapsync_when_worker_fails(tmp_path):
+    """Сбой в воркере во время работы imapsync не оставляет процесс без присмотра."""
+    pidfile = tmp_path / "child.pid"
+    script = tmp_path / "imapsync"
+    script.write_text(f"""#!{sys.executable}
+import os, time
+open({str(pidfile)!r}, "w").write(str(os.getpid()))
+print("msg INBOX/1 {{1}} copied to INBOX/1 ETA: Wed Oct 14 18:00:02 2026  2 s  2/3 msgs left", flush=True)
+time.sleep(60)
+""")
+    script.chmod(0o755)
+    job = Job(RunKind.BACKUP, ep(), Endpoint("127.0.0.1", 143, Security.PLAIN, "u@x.ru", "l"))
+
+    def broken_progress(_p):
+        raise RuntimeError("БД недоступна")
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError):
+        run_imapsync(job, imapsync_bin=str(script), work_dir=tmp_path / "work",
+                     log_path=tmp_path / "run.log", on_progress=broken_progress)
+    assert time.monotonic() - started < 20
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pidfile.read_text()), 0)
+    assert not (tmp_path / "work").exists()
 
 
 def test_execute_run_with_message_errors(fake_imapsync, monkeypatch):

@@ -9,6 +9,10 @@ from sqlalchemy.schema import CreateColumn
 
 from .config import get_settings
 
+# Сколько ждать чужую запись, прежде чем отдать «database is locked», секунд.
+# Пока imapsync пишет на тот же диск гигабайты, fsync коммита бывает долгим
+BUSY_TIMEOUT = 30
+
 
 class Base(DeclarativeBase):
     pass
@@ -19,7 +23,7 @@ def get_engine() -> Engine:
     settings = get_settings()
     engine = create_engine(
         f"sqlite:///{settings.db_path}",
-        connect_args={"check_same_thread": False},
+        connect_args={"check_same_thread": False, "timeout": BUSY_TIMEOUT},
     )
 
     @event.listens_for(engine, "connect")
@@ -28,7 +32,9 @@ def get_engine() -> Engine:
         # WAL: веб-интерфейс читает, пока воркер пишет статистику
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA foreign_keys=ON")
-        cur.execute("PRAGMA busy_timeout=5000")
+        cur.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT * 1000}")
+        # В режиме WAL этого достаточно для целостности; fsync — только при checkpoint
+        cur.execute("PRAGMA synchronous=NORMAL")
         cur.close()
 
     return engine

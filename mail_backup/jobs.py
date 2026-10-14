@@ -2,6 +2,7 @@
 
 import ipaddress
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -9,6 +10,7 @@ import time
 from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from . import app_settings, crypto, dovecot, restic
@@ -18,6 +20,8 @@ from .imapsync.parser import Progress, status_from_exit
 from .imapsync.runner import run_imapsync
 from .models import Mailbox, Run, RunKind, RunPhase, RunStatus, RunTrigger, utcnow
 from .providers import Security, get_provider
+
+log = logging.getLogger("mail_backup.jobs")
 
 # Не чаще раза в N секунд пишем прогресс в БД, чтобы не нагружать SQLite
 PROGRESS_SAVE_INTERVAL = 2.0
@@ -248,10 +252,27 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
     session.commit()
 
     last_save = 0.0
+    # Живые поля (PID, прогресс), ещё не записанные в БД
+    pending: dict[str, int | None] = {}
+
+    def save_live(**values: int | None) -> None:
+        """Пишет живые поля запуска. БД занята — не беда: запишем в следующий раз.
+
+        Иначе «database is locked» при обновлении процентов обрывал бы многочасовой бэкап.
+        """
+        pending.update(values)
+        for name, value in pending.items():
+            setattr(run, name, value)
+        try:
+            session.commit()
+        except OperationalError as exc:
+            session.rollback()
+            log.warning("Запуск #%s: живые поля не записаны, БД занята: %s", run.id, exc.orig)
+        else:
+            pending.clear()
 
     def on_start(pid: int) -> None:
-        run.pid = pid
-        session.commit()
+        save_live(pid=pid)
 
     def on_progress(p: Progress) -> None:
         nonlocal last_save
@@ -259,8 +280,7 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
         if now - last_save < PROGRESS_SAVE_INTERVAL:
             return
         last_save = now
-        run.progress_done, run.progress_total, run.eta_seconds = p.done, p.msgs_total, p.eta_seconds
-        session.commit()
+        save_live(progress_done=p.done, progress_total=p.msgs_total, eta_seconds=p.eta_seconds)
 
     # История в снимках restic: только с ней зеркало удаляет то, что удалено на хостере
     history = run.kind == RunKind.BACKUP and snapshots_wanted(session)
