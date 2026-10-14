@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from .. import app_settings, auth, storage_estimate
 from ..config import get_settings
 from ..db import get_session
-from ..jobs import active_run, enqueue_run
+from ..jobs import active_run, enqueue_run, last_backup
 from ..models import Mailbox, Run, RunKind, RunStatus, RunTrigger
 from ..worker import next_slot, parse_schedule, worker_alive
 from .common import csrf_protect, flash, render, require_admin
@@ -23,8 +23,6 @@ from .common import csrf_protect, flash, render, require_admin
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 ACTIVE = (RunStatus.QUEUED, RunStatus.RUNNING)
-# Удачным бэкапом считается и завершённый с ошибками по отдельным письмам
-DONE_OK = (RunStatus.SUCCESS, RunStatus.WARNING)
 
 
 @dataclass
@@ -43,7 +41,7 @@ def mailbox_overview(session: Session) -> list[MailboxRow]:
     for box in session.scalars(select(Mailbox).order_by(Mailbox.name)):
         backups = select(Run).where(Run.mailbox_id == box.id, Run.kind == RunKind.BACKUP).order_by(Run.id.desc())
         last_run = session.scalars(backups.where(Run.status.not_in(ACTIVE)).limit(1)).first()
-        last_ok = session.scalars(backups.where(Run.status.in_(DONE_OK), Run.dry_run.is_(False)).limit(1)).first()
+        last_ok = last_backup(session, box.id)
         active = session.scalars(
             select(Run).where(Run.mailbox_id == box.id, Run.status.in_(ACTIVE)).limit(1)
         ).first()

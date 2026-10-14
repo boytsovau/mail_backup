@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf, field_error with context %}
+{% block title %}Восстановление и перенос: {{ box.name }}{% endblock %}
+{% block content %}
+{# Пресеты хостеров для app.js: тип application/json — данные, не исполняемый код #}
+<script type="application/json" id="presets">{{ presets | tojson }}</script>
+
+<section class="card">
+  <div class="card-head">
+    <h1>Восстановление и перенос: {{ box.name }}</h1>
+    <a class="button" href="/mailboxes/{{ box.id }}/edit">К ящику</a>
+  </div>
+
+  {% if active %}
+    <div class="flash flash-warn">
+      Ящик сейчас занят: <a href="/runs/{{ active.id }}">{{ KIND_LABELS[active.kind] }} #{{ active.id }}</a>.
+      Запустить можно после его окончания — параметры ниже сохранятся.
+    </div>
+  {% endif %}
+
+  <form method="post" id="transfer-form" class="form-grid">
+    {{ csrf() }}
+
+    <fieldset>
+      <legend>1. Откуда</legend>
+      <label class="check">
+        <input type="radio" name="mode" value="restore" {{ 'checked' if form.mode == 'restore' }} {{ 'disabled' if not backup }}>
+        Восстановить из бэкапа на этом сервере
+      </label>
+      <p class="hint">
+        {% if backup %}
+          Последний удачный бэкап: {{ dt(backup.finished_at) }}{% if backup.host2_messages is not none %},
+          {{ backup.host2_messages }} писем, {{ backup.host2_bytes | size }}{% endif %}.
+          Восстанавливается состояние ящика на момент этого бэкапа.
+        {% else %}
+          Удачного бэкапа ещё не было — восстанавливать нечего.
+        {% endif %}
+      </p>
+      <label class="check">
+        <input type="radio" name="mode" value="migrate" {{ 'checked' if form.mode == 'migrate' }}>
+        Перенести напрямую с хостера ({{ box.login }} на {{ box.host }})
+      </label>
+      <p class="hint">Письма читаются с хостера прямо сейчас, бэкап не нужен. На хостере ничего не меняется.</p>
+      {{ field_error(errors, 'mode') }}
+    </fieldset>
+
+    <fieldset>
+      <legend>2. Куда</legend>
+      <label class="check" data-show-if="mode:restore">
+        <input type="radio" name="target" value="same" {{ 'checked' if form.target == 'same' }}>
+        В этот же ящик ({{ box.login }}, сохранённый пароль)
+      </label>
+      <label class="check">
+        <input type="radio" name="target" value="other" {{ 'checked' if form.target == 'other' }}>
+        В другой ящик
+      </label>
+      {{ field_error(errors, 'target') }}
+
+      <div class="stack" data-show-if="target:other">
+        <label>Хостер
+          <select name="provider" id="provider">
+            {% for p in presets %}
+              <option value="{{ p.key }}" {{ 'selected' if p.key == form.provider }}>{{ p.title }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <p class="hint" id="provider-note">{{ provider_note }}</p>
+        <div class="row">
+          <label class="grow">IMAP-сервер
+            <input name="host" id="host" value="{{ form.host }}">
+            {{ field_error(errors, 'host') }}
+          </label>
+          <label>Порт
+            <input name="port" id="port" value="{{ form.port }}" inputmode="numeric" size="6">
+            {{ field_error(errors, 'port') }}
+          </label>
+          <label>Шифрование
+            <select name="security" id="security">
+              <option value="ssl" {{ 'selected' if form.security == 'ssl' }}>SSL/TLS</option>
+              <option value="starttls" {{ 'selected' if form.security == 'starttls' }}>STARTTLS</option>
+              <option value="plain" {{ 'selected' if form.security == 'plain' }}>нет</option>
+            </select>
+          </label>
+        </div>
+        <label>Логин ящика-получателя
+          <input name="login" value="{{ form.login }}" autocomplete="off">
+          {{ field_error(errors, 'login') }}
+        </label>
+        <label>Пароль приложения
+          <input name="password" type="password" autocomplete="new-password">
+          <span class="hint">Хранится зашифрованным только до конца запуска (после пробного прогона — сутки).</span>
+          {{ field_error(errors, 'password') }}
+        </label>
+      </div>
+
+      <div>
+        <button type="button" hx-post="/mailboxes/{{ box.id }}/transfer/check" hx-include="#transfer-form"
+                hx-target="#check-result" hx-indicator="#check-spinner">Проверить вход в получатель</button>
+        <span id="check-spinner" class="htmx-indicator muted">проверяю…</span>
+      </div>
+      <div id="check-result"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>3. Как разложить письма</legend>
+      <label class="check">
+        <input type="radio" name="placement" value="as_is" {{ 'checked' if form.placement == 'as_is' }}>
+        По тем же папкам
+      </label>
+      <p class="hint">«Входящие», «Отправленные», «Спам» и т.п. сопоставляются автоматически, даже если у получателя они называются иначе.</p>
+      <label class="check">
+        <input type="radio" name="placement" value="subfolder" {{ 'checked' if form.placement == 'subfolder' }}>
+        Всё в отдельную папку
+      </label>
+      <label data-show-if="placement:subfolder">Имя папки
+        <input name="subfolder" value="{{ form.subfolder }}" maxlength="60">
+        <span class="hint">Латиница, цифры, пробел, «-» и «_»: imapsync удаляет из имени прочие символы. Вся структура папок источника окажется внутри неё.</span>
+        {{ field_error(errors, 'subfolder') }}
+      </label>
+      {{ field_error(errors, 'placement') }}
+    </fieldset>
+
+    <fieldset>
+      <legend>4. Запуск</legend>
+      <ul class="hint-list">
+        <li>В получателе ничего не удаляется: письма только добавляются.</li>
+        <li>Письма, которые уже лежат в той же папке получателя, пропускаются, так что повторный запуск не создаст дублей.</li>
+        <li>Флаги (прочитано, важное) и даты писем сохраняются.</li>
+        <li>Пробный прогон подключается к обоим ящикам и показывает, сколько писем будет скопировано, но ничего не копирует.</li>
+      </ul>
+      <div class="form-actions">
+        <button class="primary" name="action" value="dry">Пробный прогон</button>
+        <button name="action" value="run"
+                data-confirm="Скопировать письма в ящик-получатель сейчас, без пробного прогона?">Запустить сразу</button>
+      </div>
+    </fieldset>
+  </form>
+</section>
+{% endblock %}

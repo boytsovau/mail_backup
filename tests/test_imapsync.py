@@ -174,3 +174,98 @@ def test_execute_estimate_run_saves_folders(fake_imapsync):
         assert (run.host1_messages, run.host1_bytes) == (3, 5300)
         assert json.loads(run.folder_stats)[1]["name"] == "Отправленные"
         assert "--justfoldersizes" in json.loads(fake_imapsync.read_text())["args"]
+
+
+def test_transfer_subfolder2_replaces_automap(tmp_path):
+    job = Job(RunKind.RESTORE, ep(), ep("to@x.ru"), subfolder2="Restored-2026-10-14")
+    cmd = build_command(job, imapsync_bin="imapsync", passfile1=tmp_path, passfile2=tmp_path, tmpdir=tmp_path)
+    assert opt(cmd, "--subfolder2") == "Restored-2026-10-14"
+    assert "--automap" not in cmd and "--delete2" not in cmd
+
+    job = Job(RunKind.MIGRATE, ep(), ep("to@x.ru"))
+    cmd = build_command(job, imapsync_bin="imapsync", passfile1=tmp_path, passfile2=tmp_path, tmpdir=tmp_path)
+    assert "--automap" in cmd and "--subfolder2" not in cmd
+
+
+@pytest.mark.parametrize("bad", ["Восстановлено", "a/b", "a.b", "", " lead"])
+def test_subfolder2_name_checked(tmp_path, bad):
+    job = Job(RunKind.RESTORE, ep(), ep("to@x.ru"), subfolder2=bad)
+    if bad == "":
+        # Пустое имя — обычная раскладка по папкам
+        cmd = build_command(job, imapsync_bin="imapsync", passfile1=tmp_path, passfile2=tmp_path, tmpdir=tmp_path)
+        assert "--automap" in cmd
+        return
+    with pytest.raises(ValueError):
+        build_command(job, imapsync_bin="imapsync", passfile1=tmp_path, passfile2=tmp_path, tmpdir=tmp_path)
+
+
+def test_parser_counts_dry_copies():
+    parser = OutputParser()
+    lines = [
+        "msg INBOX/1 copying to INBOX \t(not really since --dry mode) ETA: Wed Oct 14 18:00:02 2026  2 s  1/2 msgs left",
+        "msg INBOX/2 copying to INBOX \t(not really since --dry mode) ETA: Wed Oct 14 18:00:02 2026  0 s  0/2 msgs left",
+        "Messages transferred                    : 0 ",
+    ]
+    progress = [parser.feed(line) for line in lines]
+    assert parser.stats.messages_planned == 2 and parser.stats.messages_transferred == 0
+    # Прогресс из тех же строк по-прежнему разбирается
+    assert progress[1].done == 2
+
+
+def _transfer_run(session, box, **fields):
+    run = Run(
+        kind=RunKind.RESTORE, mailbox_id=box.id, target_host="imap.mail.ru", target_port=993,
+        target_security=Security.SSL, target_login="to@mail.ru",
+        target_password_enc=crypto.encrypt("пароль-получателя"), **fields,
+    )
+    session.add(run)
+    session.commit()
+    return run
+
+
+def test_execute_restore_reads_backup_and_forgets_target_password(fake_imapsync):
+    with new_session() as session:
+        box = add_mailbox(session)
+        run = execute_run(session, _transfer_run(session, box, target_subfolder="Restored").id)
+        assert run.status == RunStatus.SUCCESS, run.error_message
+        record = json.loads(fake_imapsync.read_text())
+        # Источник — учётка ящика в локальном Dovecot, получатель — указанный ящик
+        assert opt(record["args"], "--host1") == get_settings().local_imap_host
+        assert opt(record["args"], "--user1") == box.local_login
+        assert record["pass2"] == "пароль-получателя\n"
+        assert opt(record["args"], "--subfolder2") == "Restored"
+        assert run.target_password_enc is None
+
+        dry = execute_run(session, _transfer_run(session, box, dry_run=True).id)
+        assert "--dry" in json.loads(fake_imapsync.read_text())["args"]
+        # После пробного пароль нужен для «Запустить по-настоящему»
+        assert dry.target_password_enc is not None and dry.messages_planned == 0
+
+
+def test_restore_into_local_dovecot_refused(fake_imapsync):
+    with new_session() as session:
+        box = add_mailbox(session)
+        run = _transfer_run(session, box)
+        run.target_host = "127.0.0.1"
+        session.commit()
+        run = execute_run(session, run.id)
+        assert run.status == RunStatus.FAILED
+        assert "локальным хранилищем" in run.error_message
+        assert not fake_imapsync.exists()
+
+
+def test_forget_target_passwords():
+    from datetime import timedelta
+
+    from mail_backup.jobs import forget_target_passwords
+    from mail_backup.models import utcnow
+
+    with new_session() as session:
+        box = add_mailbox(session)
+        old = _transfer_run(session, box, dry_run=True, status=RunStatus.SUCCESS,
+                            finished_at=utcnow() - timedelta(hours=25))
+        fresh = _transfer_run(session, box, dry_run=True, status=RunStatus.SUCCESS, finished_at=utcnow())
+        assert forget_target_passwords(session) == 1
+        session.refresh(old)
+        session.refresh(fresh)
+        assert old.target_password_enc is None and fresh.target_password_enc is not None

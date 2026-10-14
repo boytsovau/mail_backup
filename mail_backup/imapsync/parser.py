@@ -16,6 +16,11 @@ from ..models import RunStatus
 
 _ETA_RE = re.compile(r"ETA: .*?\s(\d+) s\s+(\d+)/(\d+) msgs left")
 
+# В режиме --dry imapsync не увеличивает «Messages transferred», а на каждое письмо,
+# которое скопировал бы, печатает (функция copy_message):
+#   msg INBOX/12 copying to INBOX 	(not really since --dry mode) ETA: ...
+_DRY_COPY_RE = re.compile(r"^msg .+ copying to .+not really since --dry mode")
+
 # Поле статистики → регулярное выражение; при повторах побеждает последнее значение
 # (размеры ящиков печатаются в начале и в конце работы, нам нужны итоговые)
 _STAT_RES: dict[str, re.Pattern[str]] = {
@@ -76,6 +81,7 @@ class Stats:
     duration_seconds: float | None = None
     folders_synced: int | None = None
     messages_transferred: int | None = None
+    messages_planned: int | None = None
     messages_skipped: int | None = None
     bytes_transferred: int | None = None
     bytes_skipped: int | None = None
@@ -112,6 +118,9 @@ class OutputParser:
     def feed(self, line: str) -> Progress | None:
         """Обрабатывает строку; возвращает прогресс, если строка его содержит."""
         line = line.strip()
+        # Строка пробного копирования содержит и ETA — считаем её до разбора прогресса
+        if _DRY_COPY_RE.match(line):
+            self.stats.messages_planned = (self.stats.messages_planned or 0) + 1
         if progress := parse_progress(line):
             self.last_progress = progress
             return progress

@@ -1,12 +1,44 @@
 // Небольшие улучшения интерфейса. Встроенные скрипты запрещены CSP — всё здесь.
 
 // Подтверждение опасных действий: <form data-confirm="Текст вопроса">
+// или <button data-confirm="..."> — когда в форме несколько кнопок и спросить надо только у одной
 document.addEventListener("submit", (event) => {
-  const question = event.target.dataset && event.target.dataset.confirm;
+  const question =
+    (event.submitter && event.submitter.dataset.confirm) ||
+    (event.target.dataset && event.target.dataset.confirm);
   if (question && !window.confirm(question)) {
     event.preventDefault();
   }
 });
+
+// Условные части формы: <div data-show-if="имя:значение"> видна, только когда
+// выбран переключатель name="имя" со значением «значение»
+function updateConditional(form) {
+  form.querySelectorAll("[data-show-if]").forEach((el) => {
+    const [name, value] = el.dataset.showIf.split(":");
+    const checked = form.querySelector(`input[name="${name}"]:checked`);
+    el.hidden = !checked || checked.value !== value;
+    // Скрытый переключатель не должен оставаться выбранным — выбираем первый видимый
+    el.querySelectorAll("input[type=radio]:checked").forEach((radio) => {
+      if (!el.hidden) return;
+      const visible = [...form.querySelectorAll(`input[name="${radio.name}"]`)].find(
+        (r) => !r.closest("[hidden]") && !r.disabled,
+      );
+      if (visible) {
+        visible.checked = true;
+        updateConditional(form);
+      }
+    });
+  });
+}
+
+function setupConditional() {
+  document.querySelectorAll("form").forEach((form) => {
+    if (!form.querySelector("[data-show-if]")) return;
+    updateConditional(form);
+    form.addEventListener("change", () => updateConditional(form));
+  });
+}
 
 // Форма ящика: выбор хостера подставляет сервер, порт и шифрование из пресета
 function setupProviderForm() {
@@ -35,6 +67,7 @@ function scrollLogs(root) {
 
 document.addEventListener("DOMContentLoaded", () => {
   setupProviderForm();
+  setupConditional();
   scrollLogs(document);
 });
 

@@ -20,7 +20,7 @@
       </td>
       <td>
         {% if row.active %}
-          <a href="/runs/{{ row.active.id }}">{{ status(row.active) }}</a>
+          <a href="/runs/{{ row.active.id }}">{% if row.active.kind != 'backup' %}{{ KIND_LABELS[row.active.kind] }}: {% endif %}{{ status(row.active) }}</a>
           {{ progress(row.active) }}
         {% elif row.last_run %}
           <a href="/runs/{{ row.last_run.id }}">{{ status(row.last_run) }}</a>
@@ -54,6 +54,7 @@
           <button class="small primary" title="Запустить бэкап сейчас">▶ Бэкап</button>
         </form>
         {% endif %}
+        <a class="button small" href="/mailboxes/{{ box.id }}/transfer" title="Восстановить из бэкапа или перенести в другой ящик">Восстановить…</a>
         <a class="button small" href="/runs?mailbox={{ box.id }}">История</a>
       </td>
     </tr>

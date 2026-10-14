@@ -1,11 +1,12 @@
 """Выполнение запуска (Run): связка БД и обёртки imapsync."""
 
+import ipaddress
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from . import crypto, dovecot
@@ -18,6 +19,10 @@ from .providers import Security, get_provider
 
 # Не чаще раза в N секунд пишем прогресс в БД, чтобы не нагружать SQLite
 PROGRESS_SAVE_INTERVAL = 2.0
+# Сколько хранить пароль получателя после пробного прогона (для «Запустить по-настоящему»)
+TARGET_PASSWORD_TTL = timedelta(hours=24)
+# Удачным считается и запуск с ошибками по отдельным письмам
+DONE_OK = (RunStatus.SUCCESS, RunStatus.WARNING)
 
 
 class StorageNotMountedError(RuntimeError):
@@ -51,9 +56,26 @@ def local_endpoint(box: Mailbox) -> Endpoint:
     )
 
 
+def is_local_host(host: str) -> bool:
+    """Адрес указывает на этот сервер (там наш Dovecot с бэкапами)."""
+    host = host.strip().lower().strip("[]")
+    if host in ("localhost", get_settings().local_imap_host.lower()) or host.endswith(".localhost"):
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_unspecified
+
+
 def run_target_endpoint(run: Run) -> Endpoint:
-    if not (run.target_host and run.target_login and run.target_password_enc):
+    if not (run.target_host and run.target_login):
         raise ValueError("Для восстановления и переноса нужен ящик-получатель")
+    if not run.target_password_enc:
+        raise ValueError("Пароль получателя уже удалён из БД — запустите мастер восстановления заново")
+    # Запись в локальный Dovecot испортила бы бэкапы: следующий бэкап с --delete2 снёс бы письма
+    if is_local_host(run.target_host):
+        raise ValueError("Получатель не может быть локальным хранилищем бэкапов")
     return Endpoint(
         run.target_host,
         run.target_port or 993,
@@ -78,6 +100,7 @@ def build_job(run: Run, *, just_login: bool = False) -> Job:
             extra = list(get_provider(box.provider).extra_args_source)
         case _:
             raise ValueError(f"Неизвестный тип запуска: {run.kind}")
+    transfer = run.kind in (RunKind.RESTORE, RunKind.MIGRATE)
     return Job(
         kind=RunKind(run.kind),
         source=source,
@@ -85,8 +108,24 @@ def build_job(run: Run, *, just_login: bool = False) -> Job:
         dry_run=run.dry_run,
         just_login=just_login,
         exclude_folders=box.exclude_folders,
+        subfolder2=run.target_subfolder if transfer else None,
         extra_args=extra,
     )
+
+
+def last_backup(session: Session, mailbox_id: int) -> Run | None:
+    """Последний удачный настоящий (не пробный) бэкап ящика."""
+    return session.scalars(
+        select(Run)
+        .where(
+            Run.mailbox_id == mailbox_id,
+            Run.kind == RunKind.BACKUP,
+            Run.status.in_(DONE_OK),
+            Run.dry_run.is_(False),
+        )
+        .order_by(Run.id.desc())
+        .limit(1)
+    ).first()
 
 
 def active_run(session: Session, mailbox_id: int) -> Run | None:
@@ -99,12 +138,15 @@ def active_run(session: Session, mailbox_id: int) -> Run | None:
 
 
 def enqueue_run(
-    session: Session, box: Mailbox, kind: RunKind, trigger: RunTrigger, *, dry_run: bool = False
+    session: Session, box: Mailbox, kind: RunKind, trigger: RunTrigger, *, dry_run: bool = False, **target
 ) -> Run:
-    """Ставит запуск в очередь; если ящик уже в работе — возвращает текущий запуск."""
+    """Ставит запуск в очередь; если ящик уже в работе — возвращает текущий запуск.
+
+    target — поля получателя для восстановления и переноса (target_host, target_login, ...).
+    """
     if existing := active_run(session, box.id):
         return existing
-    run = Run(kind=kind, mailbox_id=box.id, trigger=trigger, dry_run=dry_run)
+    run = Run(kind=kind, mailbox_id=box.id, trigger=trigger, dry_run=dry_run, **target)
     session.add(run)
     session.commit()
     return run
@@ -170,8 +212,29 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
             run.progress_done = result.last_progress.done
             run.progress_total = result.last_progress.msgs_total
         run.eta_seconds = None
+    if run.dry_run and run.status in DONE_OK and run.messages_planned is None:
+        run.messages_planned = 0
+    # Чужой пароль не храним дольше нужного; после пробного он ещё нужен для повтора
+    if not run.dry_run:
+        run.target_password_enc = None
     run.finished_at = utcnow()
     run.pid = None
     session.commit()
     return run
+
+
+def forget_target_passwords(session: Session, now: datetime | None = None) -> int:
+    """Стирает пароли получателей у завершённых запусков старше TARGET_PASSWORD_TTL."""
+    border = (now or utcnow()) - TARGET_PASSWORD_TTL
+    result = session.execute(
+        update(Run)
+        .where(
+            Run.target_password_enc.is_not(None),
+            Run.status.not_in([RunStatus.QUEUED, RunStatus.RUNNING]),
+            Run.finished_at < border,
+        )
+        .values(target_password_enc=None)
+    )
+    session.commit()
+    return result.rowcount
 

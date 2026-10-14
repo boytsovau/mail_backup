@@ -93,6 +93,7 @@
   {% if box %}
   <hr>
   <div class="danger-zone">
+    <a class="button" href="/mailboxes/{{ box.id }}/transfer">Восстановить / перенести…</a>
     <form method="post" action="/mailboxes/{{ box.id }}/estimate" class="inline">
       {{ csrf() }}
       <button title="Посчитать письма и объём по папкам, ничего не копируя">Оценить объём</button>

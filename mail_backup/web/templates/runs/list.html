@@ -18,7 +18,8 @@
       <tr>
         <td><a href="/runs/{{ run.id }}">{{ run.id }}</a></td>
         <td>{{ run.mailbox.name }}</td>
-        <td>{{ KIND_LABELS[run.kind] }}<div class="muted small">{{ TRIGGER_LABELS[run.trigger] }}</div></td>
+        <td>{{ KIND_LABELS[run.kind] }}{% if run.target_login %} → {{ run.target_login }}{% endif %}
+          <div class="muted small">{{ TRIGGER_LABELS[run.trigger] }}</div></td>
         <td>{{ status(run) }}{% if run.status == 'running' %}{{ progress(run) }}{% endif %}</td>
         <td>{{ dt(run.started_at or run.created_at) }}</td>
         <td>{{ run.duration_seconds | duration }}</td>
