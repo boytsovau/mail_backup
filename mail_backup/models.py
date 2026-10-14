@@ -99,7 +99,11 @@ class Run(Base):
     target_port: Mapped[int | None]
     target_security: Mapped[Security | None] = mapped_column(String(20))
     target_login: Mapped[str | None] = mapped_column(String(255))
+    # Пароль получателя стирается после настоящего запуска (и через сутки после пробного)
     target_password_enc: Mapped[str | None] = mapped_column(Text)
+    # Папка в получателе, куда кладётся вся иерархия источника (imapsync --subfolder2);
+    # пусто — папки раскладываются как в источнике
+    target_subfolder: Mapped[str | None] = mapped_column(String(100))
 
     created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
     started_at: Mapped[datetime | None]
@@ -116,6 +120,8 @@ class Run(Base):
 
     # Итоговая статистика из лога imapsync — источник данных для графиков
     messages_transferred: Mapped[int | None]
+    # Пробный прогон: сколько писем imapsync скопировал бы (в --dry счётчик transferred = 0)
+    messages_planned: Mapped[int | None]
     messages_skipped: Mapped[int | None]
     bytes_transferred: Mapped[int | None]
     bytes_skipped: Mapped[int | None]

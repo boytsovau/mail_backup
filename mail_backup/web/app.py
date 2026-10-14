@@ -9,7 +9,7 @@ from starlette.types import ASGIApp
 
 from .. import crypto
 from ..db import new_session
-from . import dashboard, views_auth, views_mailboxes, views_runs
+from . import dashboard, views_auth, views_mailboxes, views_runs, views_transfer
 from .common import WEB_DIR, LoginRequired, render
 
 SESSION_MAX_AGE = 12 * 3600
@@ -67,4 +67,5 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(views_mailboxes.router)
     app.include_router(views_runs.router)
+    app.include_router(views_transfer.router)
     return app

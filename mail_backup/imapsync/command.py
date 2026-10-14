@@ -5,6 +5,7 @@
 письма в ящике-получателе (host2).
 """
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,6 +16,12 @@ from ..providers import Security
 FORBIDDEN_HOST1_ARGS = frozenset({"--delete1", "--expunge1", "--delete1emptyfolders", "--expungeaftereach"})
 # Флаги удаления на host2 — допустимы только при бэкапе в собственное хранилище
 DELETE_HOST2_ARGS = frozenset({"--delete2", "--delete2folders", "--delete2duplicates", "--expunge2", "--uidexpunge2"})
+
+
+# Имя папки для --subfolder2. imapsync (sanitize_subfolder) молча выбрасывает всё,
+# кроме латиницы, цифр и «-_./ »: кириллица превратилась бы в пустую строку,
+# и письма тихо легли бы в корень. Разделители «./» тоже не пускаем — одна папка.
+SUBFOLDER_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9 _-]{0,59}$")
 
 
 class UnsafeCommandError(ValueError):
@@ -42,6 +49,8 @@ class Job:
     just_login: bool = False
     # Регулярное выражение для папок, которые пропускаем
     exclude_folders: str | None = None
+    # Восстановление/перенос: положить всю иерархию источника в эту папку получателя
+    subfolder2: str | None = None
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -93,6 +102,11 @@ def build_command(
     elif job.kind == RunKind.ESTIMATE:
         # Только размеры папок (EXAMINE + FETCH размеров), письма не копируются
         cmd.append("--justfoldersizes")
+    elif job.subfolder2:
+        if not SUBFOLDER_RE.match(job.subfolder2):
+            raise ValueError(f"Недопустимое имя папки для --subfolder2: {job.subfolder2!r}")
+        # imapsync сам выключает --automap при --subfolder2: папки кладутся как есть
+        cmd += ["--subfolder2", job.subfolder2]
     else:
         # Почтовые серверы называют «Отправленные», «Спам» и т.п. по-разному
         cmd.append("--automap")

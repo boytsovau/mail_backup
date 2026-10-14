@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from . import app_settings
 from .config import get_settings
 from .db import new_session
-from .jobs import active_run, enqueue_run, execute_run
+from .jobs import active_run, enqueue_run, execute_run, forget_target_passwords
 from .models import Mailbox, Run, RunKind, RunStatus, RunTrigger, Setting, utcnow
 
 log = logging.getLogger("mail_backup.worker")
@@ -181,6 +181,8 @@ class Worker:
             removed = cleanup_logs(prefs.log_retention_days)
             if removed:
                 log.info("Удалено старых логов: %s", removed)
+            with new_session() as session:
+                forget_target_passwords(session)
 
     def handle_cancels(self, session: Session) -> None:
         runs = session.scalars(

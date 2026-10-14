@@ -25,6 +25,29 @@
     <div class="flash flash-error">{{ run.error_message }}</div>
   {% endif %}
 
+  {% if run.dry_run and run.kind != 'estimate' and not active %}
+    <div class="dry-result">
+      {% if run.status in ('success', 'warning') %}
+        <p><strong>Пробный прогон: ничего не скопировано.</strong>
+          При настоящем запуске будет скопировано писем: <strong>{{ run.messages_planned or 0 }}</strong>{% if run.messages_skipped %},
+          уже есть в получателе и будут пропущены: {{ run.messages_skipped }}{% endif %}.
+          Подробности — в логе ниже.</p>
+        {% if run.kind == 'backup' or run.target_password_enc %}
+          <form method="post" action="/runs/{{ run.id }}/repeat" class="inline"
+                data-confirm="Запустить по-настоящему с теми же параметрами?">
+            {{ csrf() }}
+            <button class="primary">▶ Запустить по-настоящему</button>
+          </form>
+        {% else %}
+          <a class="button" href="/mailboxes/{{ run.mailbox_id }}/transfer?from_run={{ run.id }}">Запустить заново (нужен пароль получателя)</a>
+        {% endif %}
+      {% elif run.kind in ('restore', 'migrate') %}
+        <p>Пробный прогон не удался — проверьте получателя и лог ниже.</p>
+        <a class="button" href="/mailboxes/{{ run.mailbox_id }}/transfer?from_run={{ run.id }}">Изменить параметры</a>
+      {% endif %}
+    </div>
+  {% endif %}
+
   {% if run.kind == 'estimate' and estimate %}
   <div class="tiles tiles-plan">
     <div class="tile">
@@ -49,14 +72,24 @@
   {% endif %}
 
   <dl class="facts">
+    {% if run.kind in ('restore', 'migrate') %}
+    <dt>Откуда</dt>
+    <dd>{% if run.kind == 'restore' %}бэкап на этом сервере{% else %}{{ run.mailbox.login }} на {{ run.mailbox.host }}{% endif %}</dd>
+    <dt>Куда</dt>
+    <dd>{{ run.target_login }} на {{ run.target_host }}:{{ run.target_port }}{% if run.target_subfolder %}, в папку «{{ run.target_subfolder }}»{% endif %}</dd>
+    {% endif %}
     <dt>Создан</dt><dd>{{ dt(run.created_at) }}</dd>
     <dt>Начат</dt><dd>{{ dt(run.started_at) }}</dd>
     <dt>Завершён</dt><dd>{{ dt(run.finished_at) }}</dd>
     <dt>Длительность</dt><dd>{{ run.duration_seconds | duration }}</dd>
     {% if not active and run.kind != 'estimate' %}
+    {% if not run.dry_run %}
     <dt>Писем перенесено</dt><dd>{{ run.messages_transferred if run.messages_transferred is not none else '—' }}</dd>
-    <dt>Писем пропущено</dt><dd title="Уже были в бэкапе">{{ run.messages_skipped if run.messages_skipped is not none else '—' }}</dd>
+    {% endif %}
+    <dt>Писем пропущено</dt><dd title="Уже были в получателе">{{ run.messages_skipped if run.messages_skipped is not none else '—' }}</dd>
+    {% if not run.dry_run %}
     <dt>Перенесено</dt><dd>{{ run.bytes_transferred | size }}</dd>
+    {% endif %}
     <dt>Ошибок</dt><dd>{{ run.errors_count if run.errors_count is not none else '—' }}</dd>
     <dt>Папок</dt><dd>{{ run.folders_synced if run.folders_synced is not none else '—' }}</dd>
     <dt>В источнике</dt><dd>{% if run.host1_messages is not none %}{{ run.host1_messages }} писем, {{ run.host1_bytes | size }}{% else %}—{% endif %}</dd>

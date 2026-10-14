@@ -233,3 +233,110 @@ def test_estimate_all_skips_busy_mailboxes(logged_in):
     with new_session() as session:
         kinds = sorted(r.kind for r in session.query(Run))
         assert kinds == ["backup", "estimate"]
+
+
+def _box_with_backup(client, *, backup=True) -> int:
+    add_mailbox_via_form(client)
+    with new_session() as session:
+        box = session.query(Mailbox).one()
+        if backup:
+            session.add(Run(kind="backup", mailbox_id=box.id, status=RunStatus.SUCCESS, host2_messages=3))
+            session.commit()
+        return box.id
+
+
+def transfer_data(client, **overrides):
+    data = {"csrf_token": csrf(client), "mode": "restore", "target": "same", "provider": "mailru",
+            "host": "imap.mail.ru", "port": "993", "security": "ssl", "login": "", "password": "",
+            "placement": "as_is", "subfolder": "Restored", "action": "dry"}
+    data.update(overrides)
+    return data
+
+
+def test_transfer_restore_needs_backup(logged_in):
+    box_id = _box_with_backup(logged_in, backup=False)
+    page = logged_in.get(f"/mailboxes/{box_id}/transfer")
+    assert page.status_code == 200 and "Удачного бэкапа ещё не было" in page.text
+    r = logged_in.post(f"/mailboxes/{box_id}/transfer", data=transfer_data(logged_in, target="other"))
+    assert r.status_code == 400 and "восстанавливать нечего" in r.text
+
+
+def test_transfer_dry_run_then_repeat(logged_in):
+    box_id = _box_with_backup(logged_in)
+    r = logged_in.post(f"/mailboxes/{box_id}/transfer", data=transfer_data(logged_in), follow_redirects=False)
+    assert r.status_code == 303
+    with new_session() as session:
+        dry = session.query(Run).filter_by(kind="restore").one()
+        assert dry.dry_run and dry.target_login == "user@yandex.ru" and dry.target_subfolder is None
+        # «Этот же ящик» — пароль копируется из сохранённого
+        assert crypto.decrypt(dry.target_password_enc) == "app-pass"
+        dry.status, dry.messages_planned = RunStatus.SUCCESS, 7
+        session.commit()
+        dry_id = dry.id
+    page = logged_in.get(f"/runs/{dry_id}")
+    assert "будет скопировано писем: <strong>7" in page.text and "Запустить по-настоящему" in page.text
+
+    r = logged_in.post(f"/runs/{dry_id}/repeat", data={"csrf_token": csrf(logged_in)}, follow_redirects=False)
+    assert r.status_code == 303
+    with new_session() as session:
+        real = session.query(Run).filter_by(kind="restore", dry_run=False).one()
+        assert r.headers["location"] == f"/runs/{real.id}"
+        assert crypto.decrypt(real.target_password_enc) == "app-pass"
+        assert session.get(Run, dry_id).target_password_enc is None
+
+
+def test_transfer_other_mailbox_with_subfolder(logged_in):
+    box_id = _box_with_backup(logged_in)
+    data = transfer_data(logged_in, mode="migrate", target="other", login="to@mail.ru", password="p",
+                         placement="subfolder", subfolder="From-Yandex", action="run")
+    r = logged_in.post(f"/mailboxes/{box_id}/transfer", data=data, follow_redirects=False)
+    assert r.status_code == 303
+    with new_session() as session:
+        run = session.query(Run).filter_by(kind="migrate").one()
+        assert not run.dry_run
+        assert (run.target_host, run.target_login, run.target_subfolder) == ("imap.mail.ru", "to@mail.ru", "From-Yandex")
+        assert crypto.decrypt(run.target_password_enc) == "p"
+    assert "to@mail.ru" in logged_in.get("/runs").text
+
+
+@pytest.mark.parametrize("overrides, error", [
+    ({"mode": "migrate"}, "Перенос в тот же ящик"),
+    ({"target": "other", "host": "127.0.0.1", "login": "x", "password": "p"}, "самого сервера бэкапов"),
+    ({"target": "other", "host": "localhost", "login": "x", "password": "p"}, "самого сервера бэкапов"),
+    ({"mode": "migrate", "target": "other", "host": "IMAP.yandex.ru", "login": "User@yandex.ru", "password": "p"},
+     "тот же ящик, что и источник"),
+    ({"target": "other", "login": "", "password": ""}, "Укажите логин"),
+    ({"placement": "subfolder", "subfolder": "Восстановлено"}, "Только латинские"),
+])
+def test_transfer_validation(logged_in, overrides, error):
+    box_id = _box_with_backup(logged_in)
+    r = logged_in.post(f"/mailboxes/{box_id}/transfer", data=transfer_data(logged_in, **overrides))
+    assert r.status_code == 400 and error in r.text
+    with new_session() as session:
+        assert session.query(Run).filter(Run.kind != "backup").count() == 0
+
+
+def test_transfer_busy_mailbox_keeps_form(logged_in):
+    box_id = _box_with_backup(logged_in)
+    with new_session() as session:
+        session.add(Run(kind="backup", mailbox_id=box_id))
+        session.commit()
+    r = logged_in.post(f"/mailboxes/{box_id}/transfer",
+                       data=transfer_data(logged_in, target="other", login="to@mail.ru", password="p"))
+    assert r.status_code == 409 and "Ящик сейчас занят" in r.text and 'value="to@mail.ru"' in r.text
+
+
+def test_repeat_without_password_opens_prefilled_wizard(logged_in):
+    box_id = _box_with_backup(logged_in)
+    with new_session() as session:
+        run = Run(kind="migrate", mailbox_id=box_id, dry_run=True, status=RunStatus.SUCCESS,
+                  target_host="imap.mail.ru", target_port=993, target_security="ssl",
+                  target_login="to@mail.ru", target_subfolder="Old")
+        session.add(run)
+        session.commit()
+        run_id = run.id
+    r = logged_in.post(f"/runs/{run_id}/repeat", data={"csrf_token": csrf(logged_in)}, follow_redirects=False)
+    assert r.headers["location"] == f"/mailboxes/{box_id}/transfer?from_run={run_id}"
+    page = logged_in.get(r.headers["location"])
+    assert 'value="to@mail.ru"' in page.text and 'value="Old"' in page.text
+    assert '<option value="mailru" selected' in page.text
