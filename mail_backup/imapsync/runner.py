@@ -56,7 +56,8 @@ def run_imapsync(
         )
 
         parser = OutputParser()
-        with open(log_path, "a", encoding="utf-8") as log:
+        # Построчная запись: панель показывает лог, пока imapsync работает
+        with open(log_path, "a", encoding="utf-8", buffering=1) as log:
             # Паролей в команде нет — только пути к файлам, поэтому её можно писать в лог
             log.write("$ " + " ".join(cmd) + "\n")
             log.flush()
