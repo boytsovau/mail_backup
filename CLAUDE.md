@@ -188,6 +188,11 @@ deploy/
                          хранилища в обоих одинаковая; плейсхолдеры @...@
 tests/          — pytest; imapsync подменяется фальшивым скриптом,
                   образец вывода — tests/data/imapsync_output.txt
+.github/workflows/tests.yml — CI: pytest на Python 3.12 и 3.13 (с restic из apt, чтобы шёл
+                  тест с настоящим restic), bash -n и shellcheck для install.sh
+LICENSE         — MIT
+README.md       — описание для GitHub: бейджи (статические, shields.io), возможности,
+                  установка, ссылки на компоненты; версии в бейджах обновлять вместе с проектом
 ```
 
 ## Настройки (переменные окружения)

@@ -3,6 +3,8 @@ name = "mail-backup"
 version = "0.1.0"
 description = "Резервное копирование, перенос и восстановление почты по IMAP через imapsync"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
@@ -22,7 +24,7 @@ dev = ["pytest>=8", "httpx2>=2.13"]
 mail-backup = "mail_backup.cli:main"
 
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
