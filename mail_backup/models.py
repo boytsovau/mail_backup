@@ -59,6 +59,8 @@ class Mailbox(Base):
     # Учётка этого ящика в локальном Dovecot (хранилище бэкапа)
     local_login: Mapped[str] = mapped_column(String(255), unique=True)
     local_password_enc: Mapped[str] = mapped_column(Text)
+    # Пароль учётки просмотра (только чтение, dovecot.view_login); None — просмотр выключен
+    view_password_enc: Mapped[str | None] = mapped_column(Text)
 
     enabled: Mapped[bool] = mapped_column(default=True)
     # Время ежедневного бэкапа «ЧЧ:ММ[,ЧЧ:ММ...]» в часовом поясе админки,
@@ -74,6 +76,14 @@ class Mailbox(Base):
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
     runs: Mapped[list["Run"]] = relationship(back_populates="mailbox")
+
+    @property
+    def view_login(self) -> str:
+        """Учётка Dovecot для просмотра бэкапа почтовым клиентом (только чтение).
+
+        Начинается с «_» — такие логины у ящиков запрещены, совпасть с учёткой ящика не может.
+        """
+        return f"_view.{self.local_login}"
 
 
 class Run(Base):

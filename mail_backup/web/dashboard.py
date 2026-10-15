@@ -4,7 +4,7 @@ import os
 import shutil
 import socket
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from datetime import datetime, timedelta, timezone
 
@@ -13,7 +13,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import app_settings, auth, restic, stats, storage_estimate
+from .. import app_settings, auth, dovecot, restic, stats, storage_estimate
 from ..config import get_settings
 from ..db import get_session
 from ..jobs import active_run, enqueue_run, last_backup, snapshots_wanted
@@ -167,7 +167,12 @@ def storage_estimate_all(request: Request, session: Session = Depends(get_sessio
 
 @router.get("/settings")
 def settings_page(request: Request, session: Session = Depends(get_session)):
-    return render(request, session, "settings.html", {"admin_login": auth.admin_login(session)})
+    return render(request, session, "settings.html", {
+        "admin_login": auth.admin_login(session),
+        "view_imap_host": get_settings().view_imap_host,
+        # Админ обычно заходит в панель через тот же VPN — подсказка, какую сеть разрешить
+        "client_ip": request.client.host if request.client else None,
+    })
 
 
 @router.post("/settings", dependencies=[Depends(csrf_protect)])
@@ -183,8 +188,25 @@ def settings_save(
     except ValueError as exc:
         flash(request, str(exc), "error")
     else:
-        app_settings.save(session, prefs)
+        # Сети просмотра сохраняются своей формой — здесь оставляем как были
+        current = app_settings.load(session)
+        app_settings.save(session, replace(prefs, view_allowed_nets=current.view_allowed_nets))
         flash(request, "Настройки сохранены")
+    return RedirectResponse("/settings", 303)
+
+
+@router.post("/settings/view", dependencies=[Depends(csrf_protect)])
+def view_settings_save(request: Request, view_allowed_nets: str = Form(""),
+                       session: Session = Depends(get_session)):
+    """Сети, из которых почтовый клиент может смотреть бэкапы (учётки только для чтения)."""
+    try:
+        nets = app_settings.parse_nets(view_allowed_nets)
+    except ValueError as exc:
+        flash(request, str(exc), "error")
+    else:
+        app_settings.save(session, replace(app_settings.load(session), view_allowed_nets=", ".join(nets)))
+        dovecot.sync_users(session)
+        flash(request, "Сети для просмотра почты сохранены")
     return RedirectResponse("/settings", 303)
 
 
@@ -240,6 +262,7 @@ def system_page(request: Request, session: Session = Depends(get_session)):
         "MB_SECRETS_DIR": settings.secrets_dir,
         "MB_LOCAL_IMAP_HOST": settings.local_imap_host,
         "MB_LOCAL_IMAP_PORT": settings.local_imap_port,
+        "MB_VIEW_IMAP_HOST": settings.view_imap_host or "— (только 127.0.0.1)",
         "MB_IMAPSYNC_BIN": settings.imapsync_bin,
         "MB_RESTIC_BIN": settings.restic_bin,
     }

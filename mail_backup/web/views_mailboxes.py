@@ -8,7 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from .. import crypto, dovecot
+from .. import app_settings, crypto, dovecot
 from ..config import get_settings
 from ..db import get_session
 from ..imapcheck import check_login
@@ -116,14 +116,30 @@ def _presets() -> list[dict]:
     return [asdict(p) | {"security": p.security.value} for p in PROVIDERS.values()]
 
 
+def _view_access(session: Session, box: Mailbox | None, password: str | None) -> dict | None:
+    """Данные для подключения почтового клиента к бэкапу ящика (только чтение)."""
+    if box is None:
+        return None
+    settings = get_settings()
+    return {
+        "enabled": bool(box.view_password_enc),
+        "host": settings.view_imap_host,
+        "port": settings.local_imap_port,
+        "login": box.view_login,
+        "password": password,
+        "nets": app_settings.parse_nets(app_settings.load(session).view_allowed_nets),
+    }
+
+
 def _form_page(request: Request, session: Session, form: MailboxForm, *, box: Mailbox | None = None,
-               errors: dict | None = None, status_code: int = 200):
+               errors: dict | None = None, status_code: int = 200, view_password: str | None = None):
     return render(request, session, "mailboxes/form.html", {
         "form": form,
         "box": box,
         "errors": errors or {},
         "presets": _presets(),
         "provider_note": get_provider(form.provider).note,
+        "view": _view_access(session, box, view_password),
     }, status_code)
 
 
@@ -196,6 +212,28 @@ def mailbox_delete(request: Request, mailbox_id: int, session: Session = Depends
     dovecot.sync_users(session)
     flash(request, f"Ящик «{name}» удалён. Его бэкап остался на диске: {maildir}")
     return RedirectResponse("/mailboxes", 303)
+
+
+@router.post("/{mailbox_id}/view", dependencies=[Depends(csrf_protect)])
+async def mailbox_view_access(request: Request, mailbox_id: int, session: Session = Depends(get_session)):
+    """Учётка просмотра бэкапа почтовым клиентом: включить, показать пароль, выключить."""
+    box = _get_box(session, mailbox_id)
+    action = (await request.form()).get("action")
+    if action == "enable" and not box.view_password_enc:
+        box.view_password_enc = dovecot.new_view_password()
+        session.commit()
+        dovecot.sync_users(session)
+        flash(request, "Просмотр включён: почтовый клиент видит бэкап, но ничего не может в нём изменить")
+    elif action == "disable" and box.view_password_enc:
+        box.view_password_enc = None
+        session.commit()
+        dovecot.sync_users(session)
+        flash(request, "Просмотр выключен, учётка удалена")
+    elif action == "password" and box.view_password_enc:
+        # Пароль — только по явному запросу, не в обычной выдаче страницы
+        return _form_page(request, session, MailboxForm.from_mailbox(box), box=box,
+                          view_password=crypto.decrypt(box.view_password_enc))
+    return RedirectResponse(f"/mailboxes/{box.id}/edit", 303)
 
 
 @router.post("/check", dependencies=[Depends(csrf_protect)], response_class=HTMLResponse)

@@ -7,6 +7,7 @@ from conftest import add_mailbox
 from fastapi.testclient import TestClient
 
 from mail_backup import app_settings, auth, crypto, models
+from mail_backup.config import get_settings
 from mail_backup.db import new_session
 from mail_backup.main import app
 from mail_backup.models import Mailbox, Run, RunStatus
@@ -523,3 +524,39 @@ def test_dashboard_warns_about_missing_snapshot(logged_in, fake_restic):
     page = logged_in.get("/")
     assert "нет снимка" in page.text and "репозиторий заблокирован" in page.text
     assert "restic" in logged_in.get("/system").text
+
+
+def test_mailbox_view_access(logged_in):
+    """Просмотр бэкапа клиентом: включить, показать пароль (по POST), выключить."""
+    with new_session() as session:
+        box_id = add_mailbox(session).id
+    url = f"/mailboxes/{box_id}/view"
+    page = logged_in.get(f"/mailboxes/{box_id}/edit").text
+    assert "Включить просмотр" in page
+
+    r = logged_in.post(url, data={"csrf_token": csrf(logged_in), "action": "enable"}, follow_redirects=False)
+    assert r.status_code == 303
+    with new_session() as session:
+        password = crypto.decrypt(session.get(Mailbox, box_id).view_password_enc)
+    page = logged_in.get(f"/mailboxes/{box_id}/edit").text
+    # Пароль не выдаётся с обычной страницей; Dovecot без --imap-listen — подсказка про SSH-туннель
+    assert "_view.user@yandex.ru" in page and password not in page and "SSH-туннель" in page
+    assert password in logged_in.post(url, data={"csrf_token": csrf(logged_in), "action": "password"}).text
+
+    logged_in.post(url, data={"csrf_token": csrf(logged_in), "action": "disable"})
+    with new_session() as session:
+        assert session.get(Mailbox, box_id).view_password_enc is None
+    assert "_view." not in (get_settings().dovecot_users_file.read_text())
+
+
+def test_view_networks_setting_survives_general_settings(logged_in):
+    r = logged_in.post("/settings/view", data={"csrf_token": csrf(logged_in), "view_allowed_nets": "10.8.0.7/24"},
+                       follow_redirects=False)
+    assert r.status_code == 303
+    logged_in.post("/settings", data={"csrf_token": csrf(logged_in), "max_parallel_jobs": 3,
+                                      "timezone": "UTC", "log_retention_days": 10})
+    with new_session() as session:
+        prefs = app_settings.load(session)
+        assert (prefs.view_allowed_nets, prefs.max_parallel_jobs) == ("10.8.0.0/24", 3)
+    r = logged_in.post("/settings/view", data={"csrf_token": csrf(logged_in), "view_allowed_nets": "fd00::/8"})
+    assert "только сети IPv4" in r.text

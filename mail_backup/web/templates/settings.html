@@ -23,6 +23,23 @@
 </section>
 
 <section class="card">
+  <h2>Просмотр почты</h2>
+  <form method="post" action="/settings/view" class="stack narrow-form">
+    {{ csrf() }}
+    <label>Сети, откуда можно смотреть бэкапы почтовым клиентом
+      <input name="view_allowed_nets" value="{{ prefs.view_allowed_nets }}" placeholder="например: 10.8.0.0/24">
+      <span class="hint">Через запятую, только IPv4. Пусто — только с самого сервера (SSH-туннель).
+        {% if client_ip %}Сейчас вы зашли в панель с адреса <code>{{ client_ip }}</code>.{% endif %}
+        Просмотр включается у каждого ящика на его странице.</span>
+    </label>
+    <p class="hint">{% if view_imap_host %}Dovecot принимает просмотр на <code>{{ view_imap_host }}</code>, порт 143.
+      {% else %}Dovecot слушает только 127.0.0.1: для подключения по IP сервера переустановите
+      с <code>--imap-listen IP</code>.{% endif %}</p>
+    <button class="primary">Сохранить</button>
+  </form>
+</section>
+
+<section class="card">
   <h2>Учётная запись администратора</h2>
   <form method="post" action="/settings/account" class="stack narrow-form">
     {{ csrf() }}

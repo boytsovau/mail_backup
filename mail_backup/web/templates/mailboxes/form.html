@@ -112,4 +112,44 @@
   </div>
   {% endif %}
 </section>
+
+{% if view %}
+<section class="card">
+  <h2>Просмотр почты</h2>
+  <p class="hint">Бэкап ящика можно открыть в почтовом клиенте (Thunderbird, Apple Mail…) — только для чтения:
+    удалить, переместить письмо или пометить его прочитанным нельзя.</p>
+  {% if view.enabled %}
+  {% if not view.host %}
+    <div class="flash flash-warn">Dovecot слушает только 127.0.0.1 — подключиться можно через SSH-туннель
+      (<code>ssh -L 1143:127.0.0.1:143 сервер</code>, в клиенте — localhost:1143). Чтобы подключаться по IP
+      сервера, переустановите с <code>--imap-listen IP</code>.</div>
+  {% elif not view.nets %}
+    <div class="flash flash-warn">Не заданы сети, из которых можно смотреть почту, — вход пока только
+      с самого сервера. Укажите сеть VPN в <a href="/settings">настройках</a>.</div>
+  {% endif %}
+  <dl class="facts">
+    <dt>Сервер IMAP</dt><dd><code>{{ view.host or '127.0.0.1' }}</code>, порт {{ view.port }}, без шифрования</dd>
+    <dt>Логин</dt><dd><code>{{ view.login }}</code></dd>
+    <dt>Пароль</dt>
+    <dd>
+      {% if view.password %}
+        <code class="secret">{{ view.password }}</code>
+      {% else %}
+        <form method="post" action="/mailboxes/{{ box.id }}/view" class="inline">{{ csrf() }}
+          <button class="small" name="action" value="password">Показать пароль</button></form>
+      {% endif %}
+    </dd>
+    {% if view.host %}<dt>Откуда</dt><dd>{{ view.nets | join(', ') if view.nets else 'только с сервера' }}
+      · <a href="/settings">изменить</a></dd>{% endif %}
+  </dl>
+  <p class="hint">Пароль без шифрования допустим только внутри VPN. В клиенте выберите «Без шифрования»
+    и обычный пароль.</p>
+  <form method="post" action="/mailboxes/{{ box.id }}/view" class="inline">{{ csrf() }}
+    <button name="action" value="disable">Выключить просмотр</button></form>
+  {% else %}
+  <form method="post" action="/mailboxes/{{ box.id }}/view" class="inline">{{ csrf() }}
+    <button name="action" value="enable">Включить просмотр</button></form>
+  {% endif %}
+</section>
+{% endif %}
 {% endblock %}

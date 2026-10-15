@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Локальный Dovecot, слушает только 127.0.0.1 без TLS
     local_imap_host: str = "127.0.0.1"
     local_imap_port: int = 143
+    # IP сервера, на котором Dovecot дополнительно слушает для просмотра почты
+    # (учётки только для чтения); пусто — только 127.0.0.1. Задаёт установщик (--imap-listen)
+    view_imap_host: str = ""
 
     imapsync_bin: str = "imapsync"
     restic_bin: str = "restic"

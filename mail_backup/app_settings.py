@@ -3,6 +3,7 @@
 Базовые пути и режим развёртывания — в env-файле (config.py), всё остальное — здесь.
 """
 
+import ipaddress
 from dataclasses import dataclass, fields, replace
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -19,6 +20,9 @@ class AppSettings:
     timezone: str = "Europe/Moscow"
     # Через сколько дней удалять логи запусков (статистика в БД остаётся)
     log_retention_days: int = 90
+    # Сети, из которых можно смотреть бэкап почтовым клиентом (через запятую);
+    # пусто — только с самого сервера (SSH-туннель)
+    view_allowed_nets: str = ""
 
     @property
     def tz(self) -> ZoneInfo:
@@ -83,6 +87,27 @@ def validate(max_parallel_jobs: int, timezone: str, log_retention_days: int) -> 
     except (ZoneInfoNotFoundError, ValueError):
         raise ValueError(f"Неизвестный часовой пояс: {timezone}") from None
     return AppSettings(max_parallel_jobs, timezone, log_retention_days)
+
+
+def parse_nets(text: str) -> list[str]:
+    """Разбирает список сетей «10.8.0.0/24, 192.168.1.5»; ValueError при ошибке.
+
+    Только IPv4: адреса IPv6 содержат «:», а это разделитель полей
+    в файле учёток Dovecot (passwd-file).
+    """
+    nets = []
+    for item in text.replace(";", ",").replace(" ", ",").split(","):
+        if not item:
+            continue
+        try:
+            net = ipaddress.ip_network(item, strict=False)
+        except ValueError:
+            raise ValueError(f"Не сеть и не IP-адрес: {item}") from None
+        if net.version != 4:
+            raise ValueError(f"Поддерживаются только сети IPv4: {item}")
+        if str(net) not in nets:
+            nets.append(str(net))
+    return nets
 
 
 def save(session: Session, settings: AppSettings) -> None:

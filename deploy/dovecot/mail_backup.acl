@@ -1,0 +1,5 @@
+# Глобальные ACL для Dovecot 2.3 (deploy/install.sh кладёт в /etc/dovecot/mail_backup.acl).
+# Для 2.4 те же права записаны прямо в dovecot-2.4.conf — менять оба места.
+# Формат: <шаблон папки> <кому> <права>; group-override сильнее owner.
+* owner lrwstipekxa
+* group-override=mb-view lr

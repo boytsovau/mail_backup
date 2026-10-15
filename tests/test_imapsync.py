@@ -11,7 +11,7 @@ from conftest import SAMPLE, add_mailbox
 
 from sqlalchemy.exc import OperationalError
 
-from mail_backup import crypto, dovecot, jobs
+from mail_backup import app_settings, crypto, dovecot, jobs
 from mail_backup.config import get_settings
 from mail_backup.db import new_session
 from mail_backup.imapsync.command import Endpoint, Job, UnsafeCommandError, build_command
@@ -327,3 +327,31 @@ def test_forget_target_passwords():
         session.refresh(old)
         session.refresh(fresh)
         assert old.target_password_enc is None and fresh.target_password_enc is not None
+
+
+def test_dovecot_view_account_read_only_and_networks():
+    """Учётки imapsync — только с 127.0.0.1; учётка просмотра — на Maildir ящика, группа ACL «только чтение»."""
+    with new_session() as session:
+        box = add_mailbox(session)
+        dovecot.sync_users(session)
+        users = get_settings().dovecot_users_file.read_text().splitlines()
+        assert users == [users[0]] and users[0].endswith("::::::allow_nets=127.0.0.1/32")
+
+        app_settings.save(session, app_settings.AppSettings(view_allowed_nets="10.8.0.0/24"))
+        box.view_password_enc = dovecot.new_view_password()
+        session.commit()
+        dovecot.sync_users(session)
+        view = get_settings().dovecot_users_file.read_text().splitlines()[1]
+        fields = view.split(":")
+        # user:password:uid:gid:gecos:home:shell:extra
+        assert fields[0] == "_view.user@yandex.ru" and len(fields) == 8
+        assert fields[5] == str(get_settings().maildir_root / "user@yandex.ru")
+        assert fields[7] == "allow_nets=127.0.0.1/32,10.8.0.0/24 userdb_acl_groups=mb-view"
+
+
+def test_parse_nets():
+    assert app_settings.parse_nets("10.8.0.1/24; 192.168.1.5 10.8.0.0/24") == ["10.8.0.0/24", "192.168.1.5/32"]
+    assert app_settings.parse_nets("  ") == []
+    for bad in ("10.8.0.300", "fd00::/64", "vpn"):
+        with pytest.raises(ValueError):
+            app_settings.parse_nets(bad)
