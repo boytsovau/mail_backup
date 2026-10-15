@@ -20,6 +20,8 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("MB_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MB_BACKUP_ROOT", str(tmp_path / "backup"))
     monkeypatch.setenv("MB_SECRETS_DIR", str(tmp_path / "secrets"))
+    # restic в системе может быть, а может и нет: по умолчанию тесты считают, что его нет
+    monkeypatch.setenv("MB_RESTIC_BIN", str(tmp_path / "no-restic"))
     caches = (config.get_settings, crypto._fernet, db.get_engine, db._session_factory)
     for cached in caches:
         cached.cache_clear()

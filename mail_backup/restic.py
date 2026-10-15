@@ -52,6 +52,16 @@ class ResticError(RuntimeError):
         self.exit_code = exit_code
 
 
+# restic до 0.17 не знает кода 10: репозитория нет — код 1 и такой текст
+# (локально «no such file or directory», по SFTP — «file does not exist»)
+_NO_REPO_OLD_RE = re.compile(r"unable to open config file: .*(no such file or directory|does not exist)", re.I)
+
+
+def is_no_repo(exc: ResticError) -> bool:
+    """Ошибка означает, что репозитория по адресу ещё нет."""
+    return exc.exit_code == EXIT_NO_REPO or (exc.exit_code == 1 and bool(_NO_REPO_OLD_RE.search(str(exc))))
+
+
 @dataclass(frozen=True)
 class Repo:
     """Репозиторий restic: путь или sftp-адрес и, для sftp, аргументы ssh."""
@@ -345,7 +355,7 @@ def remote_status(repo: Repo) -> tuple[bool, str]:
     try:
         run_short(repo, ["cat", "config", "--no-lock"], timeout=60)
     except ResticError as exc:
-        if exc.exit_code == EXIT_NO_REPO:
+        if is_no_repo(exc):
             return True, "Подключение есть, репозитория ещё нет — он будет создан при первой выгрузке"
         return False, str(exc)
     return True, "Подключение есть, репозиторий на месте"
@@ -360,7 +370,7 @@ def init_remote(repo: Repo, log_path: Path) -> bool:
         run_short(repo, ["cat", "config", "--no-lock"], timeout=60)
         return False
     except ResticError as exc:
-        if exc.exit_code != EXIT_NO_REPO:
+        if not is_no_repo(exc):
             raise
     settings = get_settings()
     run_logged(repo, ["init", "--from-repo", str(settings.restic_repo),

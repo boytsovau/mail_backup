@@ -209,6 +209,22 @@ def test_remote_url_and_ssh_args():
     assert "StrictHostKeyChecking=accept-new" in args[3]
 
 
+@pytest.mark.parametrize(("code", "text", "expected"), [
+    (10, "Fatal: repository does not exist: unable to open config file", True),  # restic ≥ 0.17
+    (1, "Fatal: unable to open config file: stat /r/config: no such file or directory", True),  # 0.16, локально
+    (1, "Fatal: unable to open config file: Lstat: file does not exist", True),  # 0.16, SFTP
+    (1, "Fatal: unable to open config file: open /r/config: permission denied", False),
+    (12, "Fatal: wrong password or no key found", False),
+])
+def test_missing_remote_repo_detected_in_any_restic_version(monkeypatch, code, text, expected):
+    def fail(*args, **kwargs):
+        raise restic.ResticError(restic._error_text(code, [text]), code)
+
+    monkeypatch.setattr(restic, "run_short", fail)
+    ok, message = restic.remote_status(restic.Repo("/r"))
+    assert ok is expected and ("репозитория ещё нет" in message) is expected
+
+
 def test_copy_task_initializes_remote_and_applies_retention(restic_on):
     with new_session() as session:
         box = add_mailbox(session)
