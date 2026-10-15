@@ -405,6 +405,10 @@ def test_charts_page(logged_in):
     # Неизвестный период и чужой ящик — значения по умолчанию, а не ошибка
     page = logged_in.get(f"/charts?days=5&mailbox={box_id + 100}")
     assert page.status_code == 200 and '<option value="30" selected>' in page.text
+    # «все ящики» в фильтре — пустой mailbox, мусор в параметрах — тоже не ошибка
+    page = logged_in.get("/charts?days=7&mailbox=")
+    assert page.status_code == 200 and '<option value="7" selected>' in page.text
+    assert logged_in.get("/charts?days=abc&mailbox=x").status_code == 200
 
 
 def test_dashboard_shows_stale_backup(logged_in):
