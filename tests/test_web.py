@@ -166,6 +166,48 @@ def test_backup_button_queues_one_run(logged_in):
     assert logged_in.get("/runs").status_code == 200
 
 
+def test_pause_and_stop_buttons(logged_in):
+    with new_session() as session:
+        box = add_mailbox(session)
+        run = Run(kind=models.RunKind.BACKUP, mailbox_id=box.id, status=RunStatus.RUNNING, pid=999999,
+                  progress_done=5, progress_total=10)
+        session.add(run)
+        session.commit()
+        run_id = run.id
+    token = csrf(logged_in)
+
+    # Кнопки есть везде, где виден активный запуск
+    for path in ("/", "/mailboxes", "/runs", f"/runs/{run_id}"):
+        page = logged_in.get(path).text
+        assert f"/runs/{run_id}/pause" in page and f"/runs/{run_id}/cancel" in page, path
+
+    # После нажатия — обратно на ту страницу, где нажали; чужие адреса не принимаются
+    r = logged_in.post(f"/runs/{run_id}/pause", data={"csrf_token": token, "next": "/mailboxes"},
+                       follow_redirects=False)
+    assert r.headers["location"] == "/mailboxes"
+    page = logged_in.get("/runs").text
+    assert f"/runs/{run_id}/resume" in page and "ставится на паузу" in page
+
+    with new_session() as session:
+        run = session.get(Run, run_id)
+        assert run.pause_requested
+        run.paused_at = models.utcnow()  # воркер заморозил процесс
+        session.commit()
+    page = logged_in.get(f"/runs/{run_id}").text
+    assert "на паузе" in page and "осталось" not in page
+
+    r = logged_in.post(f"/runs/{run_id}/resume", data={"csrf_token": token, "next": "//evil.example"},
+                       follow_redirects=False)
+    assert r.headers["location"] == f"/runs/{run_id}"
+    r = logged_in.post(f"/runs/{run_id}/cancel", data={"csrf_token": token, "next": "/\\evil.example"},
+                       follow_redirects=False)
+    assert r.headers["location"] == f"/runs/{run_id}"
+    with new_session() as session:
+        run = session.get(Run, run_id)
+        assert not run.pause_requested and run.cancel_requested
+    assert "останавливается" in logged_in.get("/runs").text
+
+
 def test_settings_save_and_validate(logged_in):
     token = csrf(logged_in)
     logged_in.post("/settings", data={"csrf_token": token, "max_parallel_jobs": 3,

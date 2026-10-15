@@ -143,6 +143,9 @@ td.wide { min-width: 260px; }
 .badge-failed { color: var(--error); background: var(--error-bg); }
 .badge-running, .badge-queued { color: var(--accent); background: var(--info-bg); }
 .badge-cancelled { color: var(--muted); background: var(--bg); }
+.badge-paused { color: var(--warn); background: var(--warn-bg); }
+.run-controls { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .3rem; margin-left: .3rem; vertical-align: middle; }
+.run-controls form { margin: 0; }
 .badge-health-ok { color: var(--ok); background: var(--ok-bg); }
 .badge-health-warning, .badge-health-snapshot { color: var(--warn); background: var(--warn-bg); }
 .badge-health-failed, .badge-health-stale { color: var(--error); background: var(--error-bg); }

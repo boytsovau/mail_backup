@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from . import app_settings, restic_tasks
@@ -93,12 +93,20 @@ def cleanup_logs(retention_days: int) -> int:
 
 # --- Воркер --------------------------------------------------------------------------------
 
+def _signal(pid: int, sig: int) -> bool:
+    """Сигнал всей группе процессов запуска (imapsync или restic со своими детьми)."""
+    try:
+        os.killpg(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
 def _kill(pid: int) -> None:
     """Завершает imapsync вместе с дочерними процессами (своя группа процессов)."""
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        pass
+    if _signal(pid, signal.SIGTERM):
+        # Замороженный паузой процесс не обработает SIGTERM, пока его не разбудить
+        _signal(pid, signal.SIGCONT)
 
 
 @dataclass
@@ -156,6 +164,7 @@ class Worker:
                 session.commit()
             prefs = app_settings.load(session)
             self.handle_cancels(session)
+            self.handle_pauses(session)
             enqueue_due_backups(session, prefs)
             restic_tasks.enqueue_due(session, prefs, app_settings.load_restic(session))
             self.start_queued(session, prefs)
@@ -197,6 +206,32 @@ class Worker:
                 log.info("Задача restic #%s: отмена (pid %s)", task.id, task.pid)
                 _kill(task.pid)
                 self.task_killed = True
+        session.commit()
+
+    def handle_pauses(self, session: Session) -> None:
+        """Пауза — SIGSTOP группе imapsync, продолжение — SIGCONT.
+
+        Замораживается только сам imapsync (фаза без снимка и распаковки): письма
+        продолжат копироваться с того же места. После долгой паузы хостер может
+        закрыть соединение — imapsync переподключится сам.
+        """
+        runs = session.scalars(
+            select(Run).where(
+                Run.status == RunStatus.RUNNING,
+                Run.cancel_requested.is_(False),
+                or_(Run.pause_requested.is_(True), Run.paused_at.is_not(None)),
+            )
+        )
+        for run in runs:
+            if run.pause_requested and run.paused_at is None:
+                if run.pid and run.phase is None and _signal(run.pid, signal.SIGSTOP):
+                    run.paused_at = utcnow()
+                    log.info("Запуск #%s: пауза (pid %s)", run.id, run.pid)
+            elif not run.pause_requested and run.paused_at is not None:
+                if run.pid:
+                    _signal(run.pid, signal.SIGCONT)
+                run.paused_at = None
+                log.info("Запуск #%s: продолжение (pid %s)", run.id, run.pid)
         session.commit()
 
     def start_restic_task(self, session: Session) -> None:

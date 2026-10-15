@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status, progress with context %}
+{% from "_macros.html" import status, progress, run_controls with context %}
 {% block title %}Запуски{% endblock %}
 {% block content %}
 <section class="card">
@@ -7,6 +7,7 @@
     <h1>Запуски{% if mailbox %}: {{ mailbox.name }}{% endif %}</h1>
     {% if mailbox %}<a class="button" href="/runs">Все ящики</a>{% endif %}
   </div>
+  {% set back = request.url.path ~ ('?' ~ request.url.query if request.url.query else '') %}
   {% if runs %}
   <div class="table-wrap">
   <table>
@@ -20,7 +21,8 @@
         <td>{{ run.mailbox.name }}</td>
         <td>{{ KIND_LABELS[run.kind] }}{% if run.target_login %} → {{ run.target_login }}{% endif %}
           <div class="muted small">{{ TRIGGER_LABELS[run.trigger] }}</div></td>
-        <td>{{ status(run) }}{% if run.status == 'running' %}{{ progress(run) }}{% endif %}</td>
+        <td>{{ status(run) }}{% if run.status == 'running' %}{{ progress(run) }}{% endif %}
+          {{ run_controls(run, back) }}</td>
         <td>{{ dt(run.started_at or run.created_at) }}</td>
         <td>{{ run.duration_seconds | duration }}</td>
         <td>{{ run.messages_transferred if run.messages_transferred is not none else '—' }}</td>

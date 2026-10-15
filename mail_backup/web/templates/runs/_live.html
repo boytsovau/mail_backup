@@ -1,19 +1,11 @@
-{% from "_macros.html" import status, progress, csrf with context %}
+{% from "_macros.html" import status, progress, csrf, run_controls with context %}
 {% set active = run.status in ('queued', 'running') %}
 {# Пока запуск активен, фрагмент сам себя перезапрашивает; после завершения опрос прекращается #}
 <div id="run-live" {% if active %}hx-get="/runs/{{ run.id }}/live" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
   <div class="run-head">
     {{ status(run) }}
     <span class="muted">{{ TRIGGER_LABELS[run.trigger] }}</span>
-    {% if active and not run.cancel_requested %}
-      <form method="post" action="/runs/{{ run.id }}/cancel" class="inline"
-            data-confirm="Остановить запуск #{{ run.id }}?">
-        {{ csrf() }}
-        <button class="small danger">Отменить</button>
-      </form>
-    {% elif active %}
-      <span class="muted">останавливается…</span>
-    {% endif %}
+    {{ run_controls(run) }}
   </div>
 
   {% if run.status == 'queued' %}

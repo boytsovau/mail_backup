@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .. import auth
 from ..db import get_session
-from .common import csrf_protect, flash, render
+from .common import csrf_protect, flash, render, safe_next
 
 router = APIRouter()
 
@@ -27,13 +27,6 @@ def _blocked(ip: str) -> bool:
     recent = [t for t in _fails.get(ip, []) if now - t < FAIL_WINDOW]
     _fails[ip] = recent
     return len(recent) >= MAX_FAILS
-
-
-def _safe_next(value: str | None) -> str:
-    # Только локальные пути: защита от перенаправления на чужой сайт
-    if value and value.startswith("/") and not value.startswith("//"):
-        return value
-    return "/"
 
 
 @router.get("/setup")
@@ -74,7 +67,7 @@ def setup_submit(
 def login_page(request: Request, next: str = "/", session: Session = Depends(get_session)):
     if not auth.admin_exists(session):
         return RedirectResponse("/setup", 303)
-    return render(request, session, "login.html", {"next": _safe_next(next)})
+    return render(request, session, "login.html", {"next": safe_next(next)})
 
 
 @router.post("/login", dependencies=[Depends(csrf_protect)])
@@ -89,19 +82,19 @@ def login_submit(
     if _blocked(ip):
         return render(
             request, session, "login.html",
-            {"next": _safe_next(next), "error": "Слишком много попыток, подождите 5 минут", "login": login}, 429,
+            {"next": safe_next(next), "error": "Слишком много попыток, подождите 5 минут", "login": login}, 429,
         )
     if not auth.check_admin(session, login, password):
         _fails.setdefault(ip, []).append(time.monotonic())
         return render(
             request, session, "login.html",
-            {"next": _safe_next(next), "error": "Неверный логин или пароль", "login": login}, 401,
+            {"next": safe_next(next), "error": "Неверный логин или пароль", "login": login}, 401,
         )
     _fails.pop(ip, None)
     # Новая сессия после входа: старый CSRF-токен и прочее не переносим
     request.session.clear()
     request.session["admin"] = auth.session_version(session)
-    return RedirectResponse(_safe_next(next), 303)
+    return RedirectResponse(safe_next(next), 303)
 
 
 @router.post("/logout", dependencies=[Depends(csrf_protect)])

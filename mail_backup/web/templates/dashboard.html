@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status, progress with context %}
+{% from "_macros.html" import status, progress, run_controls with context %}
 {% block title %}Обзор{% endblock %}
 {% block scripts %}<script src="/static/chart.umd.min.js" defer></script>{% endblock %}
 {% block content %}
@@ -60,7 +60,7 @@
   <h2>Сейчас выполняется</h2>
   <div class="table-wrap">
   <table>
-    <thead><tr><th>#</th><th>Ящик</th><th>Тип</th><th>Статус</th><th>Прогресс</th></tr></thead>
+    <thead><tr><th>#</th><th>Ящик</th><th>Тип</th><th>Статус</th><th>Прогресс</th><th></th></tr></thead>
     <tbody>
     {% for run in active_runs %}
       <tr>
@@ -69,6 +69,7 @@
         <td>{{ KIND_LABELS[run.kind] }}</td>
         <td>{{ status(run) }}</td>
         <td class="wide">{{ progress(run) }}</td>
+        <td class="actions">{{ run_controls(run, '/') }}</td>
       </tr>
     {% endfor %}
     </tbody>

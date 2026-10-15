@@ -1,8 +1,8 @@
-"""Запуски: список, подробности с живым прогрессом и логом, отмена."""
+"""Запуски: список, подробности с живым прогрессом и логом, пауза и остановка."""
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from .. import storage_estimate
 from ..db import get_session
 from ..models import Mailbox, Run, RunStatus
-from .common import csrf_protect, flash, render, require_admin
+from .common import csrf_protect, flash, render, require_admin, safe_next
 
 router = APIRouter(prefix="/runs", dependencies=[Depends(require_admin)])
 
@@ -84,11 +84,43 @@ def run_live(request: Request, run_id: int, session: Session = Depends(get_sessi
     return render(request, session, "runs/_live.html", run_context(run) | {"flashes": []})
 
 
+def _back(run: Run, next: str | None) -> RedirectResponse:
+    """Кнопки управления есть и в списках — возвращаемся туда, где нажали."""
+    return RedirectResponse(safe_next(next, f"/runs/{run.id}"), 303)
+
+
 @router.post("/{run_id}/cancel", dependencies=[Depends(csrf_protect)])
-def run_cancel(request: Request, run_id: int, session: Session = Depends(get_session)):
+def run_cancel(request: Request, run_id: int, next: str | None = Form(None),
+               session: Session = Depends(get_session)):
     run = _get_run(session, run_id)
     if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
         run.cancel_requested = True
         session.commit()
-        flash(request, "Отмена запрошена — воркер остановит imapsync в течение пары секунд")
-    return RedirectResponse(f"/runs/{run.id}", 303)
+        if run.status == RunStatus.QUEUED:
+            flash(request, f"Запуск #{run.id} убран из очереди")
+        else:
+            flash(request, f"Запуск #{run.id} останавливается. Уже скопированное останется, "
+                           "следующий бэкап докачает остальное")
+    return _back(run, next)
+
+
+@router.post("/{run_id}/pause", dependencies=[Depends(csrf_protect)])
+def run_pause(request: Request, run_id: int, next: str | None = Form(None),
+              session: Session = Depends(get_session)):
+    run = _get_run(session, run_id)
+    if run.status == RunStatus.RUNNING and not run.cancel_requested:
+        run.pause_requested = True
+        session.commit()
+        flash(request, f"Запуск #{run.id} ставится на паузу")
+    return _back(run, next)
+
+
+@router.post("/{run_id}/resume", dependencies=[Depends(csrf_protect)])
+def run_resume(request: Request, run_id: int, next: str | None = Form(None),
+               session: Session = Depends(get_session)):
+    run = _get_run(session, run_id)
+    if run.status == RunStatus.RUNNING and run.pause_requested:
+        run.pause_requested = False
+        session.commit()
+        flash(request, f"Запуск #{run.id} продолжается")
+    return _back(run, next)

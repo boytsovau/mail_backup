@@ -1,4 +1,4 @@
-{% from "_macros.html" import status, progress, csrf with context %}
+{% from "_macros.html" import status, progress, csrf, run_controls with context %}
 <div class="table-wrap">
 <table>
   <thead>
@@ -22,6 +22,7 @@
         {% if row.active %}
           <a href="/runs/{{ row.active.id }}">{% if row.active.kind != 'backup' %}{{ KIND_LABELS[row.active.kind] }}: {% endif %}{{ status(row.active) }}</a>
           {{ progress(row.active) }}
+          {{ run_controls(row.active, request.url.path) }}
         {% elif row.last_run %}
           <a href="/runs/{{ row.last_run.id }}">{{ status(row.last_run) }}</a>
           <div class="muted small">{{ dt(row.last_run.finished_at) }}</div>

@@ -1,6 +1,10 @@
 {% macro status(run) -%}
   {%- if run -%}
+    {%- if run.status == 'running' and run.paused_at -%}
+    <span class="badge badge-paused" title="На паузе с {{ dt(run.paused_at) }}">на паузе{% if run.dry_run %} · пробный{% endif %}</span>
+    {%- else -%}
     <span class="badge badge-{{ run.status }}">{{ STATUS_LABELS[run.status] }}{% if run.dry_run %} · пробный{% endif %}</span>
+    {%- endif -%}
   {%- else -%}
     <span class="muted">—</span>
   {%- endif -%}
@@ -15,10 +19,39 @@
     {% set pct = (run.progress_done * 100 / run.progress_total) | round | int %}
     <div class="progress" title="{{ run.progress_done }} из {{ run.progress_total }} писем">
       <div class="progress-bar" style="width: {{ pct }}%"></div>
-      <span>{{ run.progress_done }} / {{ run.progress_total }} ({{ pct }}%){% if run.eta_seconds %} · осталось ≈ {{ run.eta_seconds | duration }}{% endif %}</span>
+      <span>{{ run.progress_done }} / {{ run.progress_total }} ({{ pct }}%){% if run.paused_at %} · пауза{% elif run.eta_seconds %} · осталось ≈ {{ run.eta_seconds | duration }}{% endif %}</span>
     </div>
   {%- elif run.status == 'running' -%}
     <span class="muted">подключение, подсчёт писем…</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{# Пауза / продолжение / остановка активного запуска. next — куда вернуться после нажатия #}
+{% macro run_controls(run, next=None) -%}
+  {%- if run.status in ('queued', 'running') -%}
+  <span class="run-controls">
+    {%- if run.cancel_requested -%}
+      <span class="muted small">останавливается…</span>
+    {%- else -%}
+      {%- if run.pause_requested -%}
+        {%- if not run.paused_at %}<span class="muted small">ставится на паузу…</span>{% endif -%}
+        <form method="post" action="/runs/{{ run.id }}/resume" class="inline">
+          {{ csrf() }}{% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+          <button class="small" title="Продолжить копирование с того же места">▶ Продолжить</button>
+        </form>
+      {%- elif run.status == 'running' and run.pid and not run.phase -%}
+        <form method="post" action="/runs/{{ run.id }}/pause" class="inline">
+          {{ csrf() }}{% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+          <button class="small" title="Заморозить imapsync; «Продолжить» продолжит с того же места">⏸ Пауза</button>
+        </form>
+      {%- endif -%}
+      <form method="post" action="/runs/{{ run.id }}/cancel" class="inline"
+            data-confirm="{% if run.status == 'queued' %}Убрать запуск #{{ run.id }} из очереди?{% else %}Остановить запуск #{{ run.id }}? Уже скопированное останется, следующий запуск докачает остальное.{% endif %}">
+        {{ csrf() }}{% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+        <button class="small danger">{% if run.status == 'queued' %}✕ Отменить{% else %}■ Остановить{% endif %}</button>
+      </form>
+    {%- endif -%}
+  </span>
   {%- endif -%}
 {%- endmacro %}
 

@@ -89,6 +89,11 @@ class Run(Base):
     dry_run: Mapped[bool] = mapped_column(default=False)
     # Админ нажал «Отменить»; воркер завершит процесс imapsync
     cancel_requested: Mapped[bool] = mapped_column(default=False, server_default="0")
+    # Админ нажал «Пауза»: воркер замораживает imapsync (SIGSTOP), снятие флага — SIGCONT
+    pause_requested: Mapped[bool] = mapped_column(default=False, server_default="0")
+    # Когда воркер фактически заморозил imapsync; пусто — процесс работает.
+    # Смысл имеет только у выполняющегося запуска
+    paused_at: Mapped[datetime | None]
 
     # Для бэкапа и переноса — источник, для восстановления — чей бэкап берём
     mailbox_id: Mapped[int] = mapped_column(ForeignKey("mailboxes.id", ondelete="CASCADE"), index=True)

@@ -37,6 +37,17 @@ def require_admin(request: Request, session: Session = Depends(get_session)) -> 
 
 # --- CSRF -------------------------------------------------------------------------------
 
+def safe_next(value: str | None, default: str = "/") -> str:
+    """Куда вернуться после действия — только локальный путь этой панели.
+
+    Защита от перенаправления на чужой сайт: «//host» и «/\\host» браузер
+    считает адресом другого сервера.
+    """
+    if value and value.startswith("/") and not value.startswith(("//", "/\\")):
+        return value
+    return default
+
+
 def csrf_token(request: Request) -> str:
     if "csrf" not in request.session:
         request.session["csrf"] = secrets.token_urlsafe(32)

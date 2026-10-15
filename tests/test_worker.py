@@ -1,3 +1,4 @@
+import subprocess
 import time
 from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
@@ -147,6 +148,57 @@ def test_cancel_running(fake_imapsync, monkeypatch):
         session.commit()
     worker.tick()
     assert wait_until(lambda: run_status(run_id) == RunStatus.CANCELLED)
+
+
+def process_state(pid: int) -> str:
+    """Первая буква состояния процесса из ps: T — заморожен, S/R — работает, пусто — нет."""
+    out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return out.strip()[:1]
+
+
+def test_pause_resume_and_stop_paused(fake_imapsync, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "30")
+    with new_session() as session:
+        box = add_mailbox(session)
+        run = Run(kind=RunKind.BACKUP, mailbox_id=box.id)
+        session.add(run)
+        session.commit()
+        run_id = run.id
+
+    worker = Worker()
+    worker.tick()
+
+    def get_run() -> Run:
+        with new_session() as session:
+            return session.get(Run, run_id)
+
+    def request(**values):
+        with new_session() as session:
+            run = session.get(Run, run_id)
+            for name, value in values.items():
+                setattr(run, name, value)
+            session.commit()
+
+    assert wait_until(lambda: get_run().pid is not None)
+    pid = get_run().pid
+
+    request(pause_requested=True)
+    worker.tick()
+    assert get_run().paused_at is not None
+    assert wait_until(lambda: process_state(pid) == "T")
+
+    request(pause_requested=False)
+    worker.tick()
+    assert get_run().paused_at is None
+    assert wait_until(lambda: process_state(pid) in ("S", "R"))
+
+    # Остановка замороженного: SIGTERM дойдёт только вместе с SIGCONT
+    request(pause_requested=True)
+    worker.tick()
+    assert wait_until(lambda: process_state(pid) == "T")
+    request(cancel_requested=True)
+    worker.tick()
+    assert wait_until(lambda: run_status(run_id) == RunStatus.CANCELLED, timeout=10)
 
 
 def test_cancel_queued_without_starting():
