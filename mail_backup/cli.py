@@ -6,15 +6,16 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 
 from sqlalchemy import select
 
-from . import auth, crypto, dovecot, restic
+from . import app_settings, auth, crypto, dovecot, restic
 from .config import get_settings
 from .crypto import ensure_keys
 from .db import create_tables, new_session
 from .jobs import check_backup_storage, execute_run
-from .models import Mailbox, Run, RunKind, RunTrigger
+from .models import Mailbox, Run, RunKind, RunTrigger, Setting
 from .providers import PROVIDERS, Security, get_provider
 
 
@@ -34,7 +35,24 @@ def cmd_init(_args: argparse.Namespace) -> None:
     create_tables()
     print(f"БД: {settings.db_path}")
     print(f"Хранилище бэкапов: {settings.maildir_root}")
+    _init_view_listen()
     _init_restic()
+
+
+def _init_view_listen() -> None:
+    """Адрес просмотра почты: файл запроса для root-помощника — по значению из БД.
+
+    Раньше адрес задавал установщик (MB_VIEW_IMAP_HOST в env-файле) — при первом
+    запуске после обновления он переносится в БД, дальше меняется только в панели.
+    """
+    legacy = get_settings().view_imap_host.strip()
+    with new_session() as session:
+        prefs = app_settings.load(session)
+        if legacy and session.get(Setting, "app.view_imap_host") is None:
+            prefs = replace(prefs, view_imap_host=legacy)
+            app_settings.save(session, prefs)
+            print(f"Адрес просмотра почты {legacy} перенесён из env-файла в настройки панели")
+    dovecot.request_listen(prefs.view_imap_host)
 
 
 def _init_restic() -> None:

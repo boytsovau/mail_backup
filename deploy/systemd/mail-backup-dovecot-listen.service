@@ -1,0 +1,17 @@
+# Применяет к Dovecot адрес просмотра почты из панели (deploy/dovecot-listen.sh).
+# От root: веб-панель сама не может ни править /etc/dovecot, ни перезагружать Dovecot.
+# Запускается из mail-backup-dovecot-listen.path. Плейсхолдеры @...@ подставляет deploy/install.sh.
+[Unit]
+Description=mail_backup: применить адрес Dovecot для просмотра почты
+After=dovecot.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mail-backup-dovecot-listen @DATA_DIR@
+
+# Писать нужно только свой файл в /etc/dovecot и итог в каталоге данных
+ProtectSystem=full
+ReadWritePaths=/etc/dovecot
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes

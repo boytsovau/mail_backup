@@ -1,0 +1,11 @@
+# Следит за адресом просмотра почты, который админ задаёт в панели (файл пишет веб),
+# и запускает его применение к Dovecot. Плейсхолдеры @...@ подставляет deploy/install.sh.
+[Unit]
+Description=mail_backup: адрес Dovecot для просмотра почты (слежение за настройкой)
+
+[Path]
+PathChanged=@DATA_DIR@/dovecot/listen
+Unit=mail-backup-dovecot-listen.service
+
+[Install]
+WantedBy=multi-user.target

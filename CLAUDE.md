@@ -40,8 +40,9 @@
 | Ящики: добавление, правка, удаление, вкл/выкл, проверка подключения | `MB_DATA_DIR` — где лежит сама БД |
 | Расписание, срок хранения, исключаемые папки — по каждому ящику | `MB_BACKUP_ROOT` — путь зашит в конфиг Dovecot |
 | Запуск бэкапа, восстановления, переноса; отмена; логи | `MB_SECRETS_DIR` — ключи нужны до открытия БД |
-| restic: удалённые серверы (SFTP), SSH-ключ (генерация, показ публичного), расписание выгрузки | `MB_LOCAL_IMAP_HOST/PORT`, `MB_VIEW_IMAP_HOST` — связаны с конфигом Dovecot |
+| restic: удалённые серверы (SFTP), SSH-ключ (генерация, показ публичного), расписание выгрузки | `MB_LOCAL_IMAP_HOST/PORT` — связаны с конфигом Dovecot |
 | Общие: число параллельных задач, хранение логов (дней), часовой пояс | `MB_IMAPSYNC_BIN` |
+| Просмотр почты: IP, на котором Dovecot принимает клиента, и разрешённые сети | |
 | Смена логина и пароля админа | |
 | Страница «Система»: место на диске, версии imapsync/Dovecot/restic, статус Dovecot, значения env (только чтение) | |
 
@@ -51,7 +52,7 @@
   админ задаёт логин и пароль в браузере. Без токена страница первичной
   настройки недоступна. `mail-backup set-admin` остаётся для сброса пароля.
 - Изменяемые в панели настройки — `mail_backup/app_settings.py` (ключи `app.*` в `settings`):
-  `max_parallel_jobs`, `timezone`, `log_retention_days`, `view_allowed_nets`.
+  `max_parallel_jobs`, `timezone`, `log_retention_days`, `view_allowed_nets`, `view_imap_host`.
 
 ### Хостер — только чтение (жёсткое требование)
 
@@ -121,10 +122,23 @@
   остаться без прав), `group-override=mb-view` — только `lr`. 2.3 — файл
   `deploy/dovecot/mail_backup.acl` → `/etc/dovecot/mail_backup.acl`, 2.4 — в самом конфиге.
   В шаблоне 2.4 убран `mail_home`: домашний каталог даёт userdb (`home:default`).
-- Сеть: Dovecot слушает `127.0.0.1` и IP из `install.sh --imap-listen` (`MB_VIEW_IMAP_HOST`,
+- Сеть: Dovecot слушает `127.0.0.1` и IP из панели (`app.view_imap_host`, «Настройки» → «Просмотр почты»,
   пусто — только локально; доступ пользователя — по VPN на обычный IP сервера). Порт 143 без TLS.
   Учётки imapsync и восстановления — `allow_nets=127.0.0.1/32`; учётки просмотра — ещё и сети
   из панели (`app.view_allowed_nets`, «Настройки»). Только IPv4: «:» — разделитель passwd-file.
+- Смена адреса из панели. Веб без прав root (`NoNewPrivileges`, /etc только на чтение), поэтому
+  он лишь пишет IP в `MB_DATA_DIR/dovecot/listen` (`dovecot.request_listen`, только при изменении —
+  каждая запись = reload Dovecot). systemd `mail-backup-dovecot-listen.path` следит за файлом и
+  запускает от root `deploy/dovecot-listen.sh` (копия в `/usr/local/sbin`, не из каталога кода —
+  он принадлежит не root): IPv4 с интерфейса сервера → `/etc/dovecot/mail_backup_listen.conf`
+  (`listen = 127.0.0.1[, IP]`, подключён в обоих шаблонах через `!include` — без файла Dovecot
+  не стартует, а не слушает всё) → `doveconf -n` → `reload` (не рвёт бэкапы), если адреса не
+  сменились — `restart`; не вышло — прежний файл. Итог — `dovecot/listen.status` (`state`,
+  `message`, `requested`), панель показывает его (`dovecot.listen_status`) и опрашивает, пока не
+  применится. Содержимому файлов из каталога сервиса помощник не доверяет: ссылки не читает,
+  чужой текст в итог не пишет, итог кладёт переименованием.
+- Раньше адрес задавал `install.sh --imap-listen` (`MB_VIEW_IMAP_HOST`): `mail-backup init`
+  переносит его в БД, установщик удаляет строку из env, флаг `--imap-listen` отклоняется.
 - Не проверено вживую (Dovecot на Mac нет) — чек-лист в INSTALL.md; в первую очередь — что
   бэкапы после включения ACL работают и что создать папку учёткой просмотра нельзя.
 
@@ -185,7 +199,9 @@ mail_backup/
 deploy/
   install.sh           — установщик/обновлятор (--mode dev|prod), идемпотентный
   INSTALL.md           — установка, обновление, чек-лист проверки этапов
-  systemd/             — mail-backup-web.service, mail-backup-worker.service (шаблоны @...@)
+  systemd/             — mail-backup-web.service, mail-backup-worker.service,
+                         mail-backup-dovecot-listen.{path,service} (шаблоны @...@)
+  dovecot-listen.sh    — root-помощник: адрес просмотра почты из панели → конфиг Dovecot
   nginx/mail_backup.conf — HTTPS-прокси к панели (шаблон @...@)
   dovecot/dovecot-2.3.conf — шаблон конфига Dovecot 2.3 (Ubuntu 24.04, DEV-сервер)
   dovecot/dovecot-2.4.conf — шаблон конфига Dovecot 2.4 (Ubuntu 25.04+/26.04)
@@ -238,7 +254,7 @@ imapsync ставится по тегу с проверкой SHA256 (конст
 | `MB_BACKUP_ROOT` | `/srv/mail_backup` | точка монтирования диска с бэкапами |
 | `MB_SECRETS_DIR` | `/etc/mail_backup` | `secret.key`, `session.key` |
 | `MB_LOCAL_IMAP_HOST/PORT` | `127.0.0.1` / `143` | локальный Dovecot |
-| `MB_VIEW_IMAP_HOST` | пусто | IP для просмотра почты клиентом (`install.sh --imap-listen`) |
+| `MB_VIEW_IMAP_HOST` | пусто | устарело: только перенос в панель при `mail-backup init` |
 | `MB_IMAPSYNC_BIN` | `imapsync` | путь к imapsync |
 | `MB_RESTIC_BIN` | `restic` | путь к restic |
 | `MB_MAX_PARALLEL_JOBS` | `2` | одновременных запусков imapsync |
@@ -393,7 +409,7 @@ mail-backup restic <аргументы>           restic с локальным �
   иначе снесло бы бэкап). Удаление ящика в панели не удаляет Maildir на диске, но удаляет
   историю запусков (`ondelete=CASCADE` + `passive_deletes` у `Mailbox.runs` — без него ORM
   обнуляла `mailbox_id`, и удаление ящика с историей падало) и кэш сверки.
-- Проверено локально: pytest (116 тестов, один — с настоящим restic, если он установлен) + скриншоты страниц в headless Chrome
+- Проверено локально: pytest (126 тестов, один — с настоящим restic, если он установлен) + скриншоты страниц в headless Chrome
   (светлая/тёмная тема, ширина 390px). На сервере ещё не запускалось.
 
 ## Разработка

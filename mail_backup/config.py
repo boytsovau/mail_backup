@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     # Локальный Dovecot, слушает только 127.0.0.1 без TLS
     local_imap_host: str = "127.0.0.1"
     local_imap_port: int = 143
-    # IP сервера, на котором Dovecot дополнительно слушает для просмотра почты
-    # (учётки только для чтения); пусто — только 127.0.0.1. Задаёт установщик (--imap-listen)
+    # Устарело: адрес просмотра почты задаётся в панели (app.view_imap_host).
+    # Читается только для переноса значения старых установок в БД (mail-backup init)
     view_imap_host: str = ""
 
     imapsync_bin: str = "imapsync"
@@ -72,6 +72,16 @@ class Settings(BaseSettings):
         # Каталог создаёт установщик с группой dovecot и setgid-битом,
         # чтобы Dovecot мог читать файл, а приложение — перезаписывать
         return self.data_dir / "dovecot" / "users"
+
+    @property
+    def dovecot_listen_file(self) -> Path:
+        # Адрес просмотра почты из панели; применяет root-помощник mail-backup-dovecot-listen
+        return self.data_dir / "dovecot" / "listen"
+
+    @property
+    def dovecot_listen_status_file(self) -> Path:
+        # Итог применения адреса — пишет помощник
+        return self.data_dir / "dovecot" / "listen.status"
 
     @property
     def restic_repo(self) -> Path:

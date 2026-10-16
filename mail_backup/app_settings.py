@@ -23,6 +23,9 @@ class AppSettings:
     # Сети, из которых можно смотреть бэкап почтовым клиентом (через запятую);
     # пусто — только с самого сервера (SSH-туннель)
     view_allowed_nets: str = ""
+    # IP сервера, на котором Dovecot принимает почтовый клиент (кроме 127.0.0.1);
+    # пусто — только локально. Применяет root-помощник (см. dovecot.request_listen)
+    view_imap_host: str = ""
 
     @property
     def tz(self) -> ZoneInfo:
@@ -108,6 +111,28 @@ def parse_nets(text: str) -> list[str]:
         if str(net) not in nets:
             nets.append(str(net))
     return nets
+
+
+def parse_listen(text: str, available: list[str] | None) -> str:
+    """Проверяет адрес просмотра почты; пусто — только 127.0.0.1. ValueError при ошибке.
+
+    available — IPv4-адреса интерфейсов сервера (None — узнать не удалось, не сверяем):
+    адреса, которого нет на сервере, Dovecot не откроет — и бэкапы встанут.
+    """
+    text = text.strip()
+    if not text:
+        return ""
+    try:
+        addr = ipaddress.IPv4Address(text)
+    except ValueError:
+        raise ValueError(f"Нужен IPv4-адрес сервера, а не «{text}»") from None
+    if addr.is_loopback:
+        raise ValueError("127.0.0.1 Dovecot слушает всегда — укажите IP сервера в VPN или локальной сети")
+    if addr.is_unspecified or addr.is_multicast:
+        raise ValueError(f"Нужен адрес одного из интерфейсов сервера, а не {addr}")
+    if available is not None and str(addr) not in available:
+        raise ValueError(f"Адреса {addr} нет на этом сервере")
+    return str(addr)
 
 
 def save(session: Session, settings: AppSettings) -> None:

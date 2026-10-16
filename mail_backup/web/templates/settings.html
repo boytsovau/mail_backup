@@ -26,15 +26,30 @@
   <h2>Просмотр почты</h2>
   <form method="post" action="/settings/view" class="stack narrow-form">
     {{ csrf() }}
+    <label>Адрес сервера для почтового клиента
+      {% if server_addresses is not none %}
+      <select name="view_imap_host">
+        <option value="">только 127.0.0.1 (SSH-туннель)</option>
+        {% for addr in server_addresses %}
+        <option value="{{ addr }}" {% if addr == prefs.view_imap_host %}selected{% endif %}>{{ addr }}</option>
+        {% endfor %}
+        {% if prefs.view_imap_host and prefs.view_imap_host not in server_addresses %}
+        <option value="{{ prefs.view_imap_host }}" selected>{{ prefs.view_imap_host }} — нет на сервере</option>
+        {% endif %}
+      </select>
+      {% else %}
+      <input name="view_imap_host" value="{{ prefs.view_imap_host }}" placeholder="IP сервера; пусто — только 127.0.0.1">
+      {% endif %}
+      <span class="hint">На этом IP Dovecot примет почтовый клиент: порт 143, без шифрования — выбирайте
+        адрес VPN или локальной сети, не публичный. 127.0.0.1 для бэкапов Dovecot слушает всегда.</span>
+    </label>
+    {% include "_listen_status.html" %}
     <label>Сети, откуда можно смотреть бэкапы почтовым клиентом
       <input name="view_allowed_nets" value="{{ prefs.view_allowed_nets }}" placeholder="например: 10.8.0.0/24">
       <span class="hint">Через запятую, только IPv4. Пусто — только с самого сервера (SSH-туннель).
         {% if client_ip %}Сейчас вы зашли в панель с адреса <code>{{ client_ip }}</code>.{% endif %}
         Просмотр включается у каждого ящика на его странице.</span>
     </label>
-    <p class="hint">{% if view_imap_host %}Dovecot принимает просмотр на <code>{{ view_imap_host }}</code>, порт 143.
-      {% else %}Dovecot слушает только 127.0.0.1: для подключения по IP сервера переустановите
-      с <code>--imap-listen IP</code>.{% endif %}</p>
     <button class="primary">Сохранить</button>
   </form>
 </section>

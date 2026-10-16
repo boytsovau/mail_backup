@@ -592,3 +592,47 @@ def test_mailbox_reset_cache(logged_in):
     cache.mkdir(parents=True)
     logged_in.post(f"/mailboxes/{box_id}/delete", data={"csrf_token": token})
     assert not cache.exists()
+
+
+def test_view_listen_address_from_panel(logged_in, monkeypatch):
+    """Адрес Dovecot для просмотра почты выбирается в панели и уходит root-помощнику файлом."""
+    from mail_backup import dovecot
+
+    monkeypatch.setattr(dovecot, "server_ipv4_addresses", lambda: ["10.8.0.1", "203.0.113.5"])
+    page = logged_in.get("/settings").text
+    assert '<option value="10.8.0.1"' in page and "только 127.0.0.1" in page
+
+    r = logged_in.post("/settings/view", data={"csrf_token": csrf(logged_in), "view_imap_host": "10.8.0.1",
+                                               "view_allowed_nets": "10.8.0.0/24"})
+    assert "применит новый адрес" in r.text
+    # Пока помощник не ответил — страница сама обновляет состояние
+    assert 'id="listen-status" hx-get="/settings"' in r.text
+    with new_session() as session:
+        assert app_settings.load(session).view_imap_host == "10.8.0.1"
+    assert get_settings().dovecot_listen_file.read_text() == "10.8.0.1\n"
+
+    get_settings().dovecot_listen_status_file.write_text("state=ok\nmessage=\nrequested=10.8.0.1\n")
+    page = logged_in.get("/settings").text
+    assert "Dovecot слушает" in page and 'hx-get="/settings"' not in page
+    # Общие настройки не сбрасывают адрес
+    logged_in.post("/settings", data={"csrf_token": csrf(logged_in), "max_parallel_jobs": 3,
+                                      "timezone": "UTC", "log_retention_days": 10})
+    with new_session() as session:
+        assert app_settings.load(session).view_imap_host == "10.8.0.1"
+
+    # Адрес попадает в данные подключения на странице ящика
+    with new_session() as session:
+        box = add_mailbox(session)
+        box.view_password_enc = crypto.encrypt("x")
+        session.commit()
+        box_id = box.id
+    assert "<code>10.8.0.1</code>" in logged_in.get(f"/mailboxes/{box_id}/edit").text
+
+    r = logged_in.post("/settings/view", data={"csrf_token": csrf(logged_in), "view_imap_host": "10.9.9.9"})
+    assert "нет на этом сервере" in r.text
+    with new_session() as session:
+        assert app_settings.load(session).view_imap_host == "10.8.0.1"
+
+    get_settings().dovecot_listen_status_file.write_text(
+        "state=error\nmessage=Dovecot не открыл порт 143\nrequested=10.8.0.1\n")
+    assert "не применён: Dovecot не открыл порт 143" in logged_in.get("/settings").text

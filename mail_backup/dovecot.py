@@ -9,14 +9,25 @@
 (Mailbox.view_login) на тот же Maildir: группа ACL VIEW_ACL_GROUP даёт ей
 только чтение (см. шаблоны конфига Dovecot), вход — ещё и из сетей
 app.view_allowed_nets.
+
+Адрес, на котором Dovecot принимает почтовый клиент, задаётся в панели. Веб работает
+без прав root, поэтому только пишет желаемый IP в файл запроса (request_listen), а
+применяет его root-помощник deploy/dovecot-listen.sh: его запускает systemd
+(mail-backup-dovecot-listen.path) при изменении файла. Итог — в файле состояния
+(listen_status).
 """
 
 import base64
 import hashlib
+import json
 import os
 import secrets
+import subprocess
 import tempfile
 import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -35,6 +46,10 @@ LOCAL_NETS = "127.0.0.1/32"
 
 # Символы, недопустимые в имени пользователя: ломают формат passwd-file или путь Maildir
 _BAD_LOGIN_CHARS = set(":/\\\n\r\t ") | {"\0"}
+
+
+# Сколько ждать помощника, прежде чем показать, что адрес не применяется
+LISTEN_APPLY_TIMEOUT = 60
 
 
 def ssha512(password: str) -> str:
@@ -109,3 +124,85 @@ def sync_users(session: Session) -> int:
             os.unlink(tmp)
             raise
     return len(lines)
+
+
+def _write_atomic(path: Path, text: str, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
+def server_ipv4_addresses() -> list[str] | None:
+    """IPv4-адреса интерфейсов сервера, кроме 127.*; None — узнать не удалось (нет ip)."""
+    try:
+        out = subprocess.run(["ip", "-j", "-4", "addr", "show"], capture_output=True, text=True,
+                             timeout=5, check=True)
+        interfaces = json.loads(out.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    addresses = []
+    for iface in interfaces:
+        for info in iface.get("addr_info", []):
+            addr = info.get("local", "")
+            if addr and not addr.startswith("127.") and addr not in addresses:
+                addresses.append(addr)
+    return addresses
+
+
+def request_listen(address: str) -> bool:
+    """Записывает адрес просмотра для root-помощника; True — если запрос изменился.
+
+    Файл не переписывается без изменений: каждая запись — это перезагрузка Dovecot.
+    """
+    path = get_settings().dovecot_listen_file
+    try:
+        if path.read_text().strip() == address:
+            return False
+    except FileNotFoundError:
+        pass
+    _write_atomic(path, address + "\n", 0o640)
+    return True
+
+
+@dataclass(frozen=True)
+class ListenStatus:
+    """Применён ли адрес просмотра из панели к Dovecot."""
+
+    # ok — Dovecot слушает 127.0.0.1 и address; error — не применён (message);
+    # pending — помощник ещё не обработал запрос
+    state: str
+    address: str = ""
+    message: str = ""
+    # pending дольше LISTEN_APPLY_TIMEOUT — помощник не запускается (не установлен?)
+    stuck: bool = False
+
+
+def listen_status() -> ListenStatus:
+    settings = get_settings()
+    try:
+        request_path = settings.dovecot_listen_file
+        requested = request_path.read_text().strip()
+        requested_at = request_path.stat().st_mtime
+    except FileNotFoundError:
+        requested, requested_at = "", None
+    status: dict[str, str] = {}
+    try:
+        for line in settings.dovecot_listen_status_file.read_text().splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                status[key] = value
+    except FileNotFoundError:
+        pass
+    # «requested» — запрос, который обработал помощник: если он не совпадает с текущим,
+    # итог относится к прошлому запросу. Без «requested» — запрос не удалось даже прочитать
+    if status.get("state") in ("ok", "error") and status.get("requested", requested) == requested:
+        return ListenStatus(status["state"], requested, status.get("message", ""))
+    stuck = requested_at is not None and time.time() - requested_at > LISTEN_APPLY_TIMEOUT
+    return ListenStatus("pending", requested, stuck=stuck)

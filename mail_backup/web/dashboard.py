@@ -169,7 +169,8 @@ def storage_estimate_all(request: Request, session: Session = Depends(get_sessio
 def settings_page(request: Request, session: Session = Depends(get_session)):
     return render(request, session, "settings.html", {
         "admin_login": auth.admin_login(session),
-        "view_imap_host": get_settings().view_imap_host,
+        "server_addresses": dovecot.server_ipv4_addresses(),
+        "listen": dovecot.listen_status(),
         # Админ обычно заходит в панель через тот же VPN — подсказка, какую сеть разрешить
         "client_ip": request.client.host if request.client else None,
     })
@@ -188,25 +189,31 @@ def settings_save(
     except ValueError as exc:
         flash(request, str(exc), "error")
     else:
-        # Сети просмотра сохраняются своей формой — здесь оставляем как были
+        # Просмотр почты сохраняется своей формой — его поля оставляем как были
         current = app_settings.load(session)
-        app_settings.save(session, replace(prefs, view_allowed_nets=current.view_allowed_nets))
+        app_settings.save(session, replace(current, max_parallel_jobs=prefs.max_parallel_jobs,
+                                           timezone=prefs.timezone, log_retention_days=prefs.log_retention_days))
         flash(request, "Настройки сохранены")
     return RedirectResponse("/settings", 303)
 
 
 @router.post("/settings/view", dependencies=[Depends(csrf_protect)])
 def view_settings_save(request: Request, view_allowed_nets: str = Form(""),
-                       session: Session = Depends(get_session)):
-    """Сети, из которых почтовый клиент может смотреть бэкапы (учётки только для чтения)."""
+                       view_imap_host: str = Form(""), session: Session = Depends(get_session)):
+    """Просмотр бэкапов почтовым клиентом: адрес Dovecot и сети, откуда пускать учётки просмотра."""
     try:
         nets = app_settings.parse_nets(view_allowed_nets)
+        address = app_settings.parse_listen(view_imap_host, dovecot.server_ipv4_addresses())
     except ValueError as exc:
         flash(request, str(exc), "error")
     else:
-        app_settings.save(session, replace(app_settings.load(session), view_allowed_nets=", ".join(nets)))
+        app_settings.save(session, replace(app_settings.load(session), view_allowed_nets=", ".join(nets),
+                                           view_imap_host=address))
         dovecot.sync_users(session)
-        flash(request, "Сети для просмотра почты сохранены")
+        if dovecot.request_listen(address):
+            flash(request, "Сохранено. Dovecot применит новый адрес в течение нескольких секунд")
+        else:
+            flash(request, "Настройки просмотра почты сохранены")
     return RedirectResponse("/settings", 303)
 
 
@@ -262,7 +269,6 @@ def system_page(request: Request, session: Session = Depends(get_session)):
         "MB_SECRETS_DIR": settings.secrets_dir,
         "MB_LOCAL_IMAP_HOST": settings.local_imap_host,
         "MB_LOCAL_IMAP_PORT": settings.local_imap_port,
-        "MB_VIEW_IMAP_HOST": settings.view_imap_host or "— (только 127.0.0.1)",
         "MB_IMAPSYNC_BIN": settings.imapsync_bin,
         "MB_RESTIC_BIN": settings.restic_bin,
     }

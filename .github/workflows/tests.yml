@@ -40,6 +40,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: bash -n
-        run: bash -n deploy/install.sh
+        run: bash -n deploy/install.sh && bash -n deploy/dovecot-listen.sh
       - name: shellcheck
-        run: shellcheck deploy/install.sh
+        run: shellcheck deploy/install.sh deploy/dovecot-listen.sh

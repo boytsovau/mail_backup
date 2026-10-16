@@ -120,14 +120,14 @@ def _view_access(session: Session, box: Mailbox | None, password: str | None) ->
     """Данные для подключения почтового клиента к бэкапу ящика (только чтение)."""
     if box is None:
         return None
-    settings = get_settings()
+    prefs = app_settings.load(session)
     return {
         "enabled": bool(box.view_password_enc),
-        "host": settings.view_imap_host,
-        "port": settings.local_imap_port,
+        "host": prefs.view_imap_host,
+        "port": get_settings().local_imap_port,
         "login": box.view_login,
         "password": password,
-        "nets": app_settings.parse_nets(app_settings.load(session).view_allowed_nets),
+        "nets": app_settings.parse_nets(prefs.view_allowed_nets),
     }
 
 

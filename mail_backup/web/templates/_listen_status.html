@@ -1,0 +1,15 @@
+{# Применён ли адрес просмотра к Dovecot; пока применяется — обновляется сам #}
+<div id="listen-status" {% if listen.state == 'pending' and not listen.stuck %}hx-get="/settings" hx-trigger="every 2s" hx-select="#listen-status" hx-swap="outerHTML"{% endif %}>
+  {% if listen.state == 'ok' %}
+  <p class="hint">Dovecot слушает: <code>127.0.0.1</code>{% if listen.address %}, <code>{{ listen.address }}</code>{% endif %}, порт 143.</p>
+  {% elif listen.state == 'error' %}
+  <div class="flash flash-error">Адрес{% if listen.address %} {{ listen.address }}{% endif %} не применён: {{ listen.message }}.
+    Dovecot работает с прежним адресом.</div>
+  {% elif listen.stuck %}
+  <div class="flash flash-warn">Адрес{% if listen.address %} {{ listen.address }}{% endif %} не применён: Dovecot не ответил.
+    Проверьте на сервере <code>systemctl status mail-backup-dovecot-listen.path</code> — если его нет,
+    обновите установку (<code>sudo ./deploy/install.sh</code>).</div>
+  {% else %}
+  <p class="hint">Dovecot применяет адрес{% if listen.address %} {{ listen.address }}{% else %} 127.0.0.1{% endif %}…</p>
+  {% endif %}
+</div>

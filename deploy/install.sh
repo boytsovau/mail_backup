@@ -20,15 +20,14 @@ IMAPSYNC_VERSION=2.314
 IMAPSYNC_SHA256=89faed96f7c389723ddd7e78a00421b90d5b85bf79407fcf1b11209f3d4d7416
 IMAPSYNC_BIN=/usr/local/bin/imapsync
 WRAPPER=/usr/local/bin/mail-backup
+# Root-помощник: применяет к Dovecot адрес просмотра почты, заданный в панели
+LISTEN_HELPER=/usr/local/sbin/mail-backup-dovecot-listen
+LISTEN_CONF=/etc/dovecot/mail_backup_listen.conf
 APP_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # Веб-панель слушает только localhost, наружу её отдаёт nginx по HTTPS
 WEB_PORT=8080
 # Адрес, по которому админ открывает панель (IP или имя); по умолчанию — IP сервера
 PUBLIC_HOST=""
-# IP сервера, на котором Dovecot примет почтовый клиент для просмотра бэкапов
-# (учётки только для чтения); не задан — берётся из env-файла, off — только 127.0.0.1
-IMAP_LISTEN=""
-IMAP_LISTEN_SET=0
 SSL_DIR=/etc/nginx/ssl
 SSL_CERT=$SSL_DIR/mail_backup.crt
 SSL_KEY=$SSL_DIR/mail_backup.key
@@ -39,7 +38,7 @@ die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<EOF
-Использование: sudo $0 --mode dev|prod [--backup-root ПУТЬ] [--host АДРЕС] [--imap-listen IP|off]
+Использование: sudo $0 --mode dev|prod [--backup-root ПУТЬ] [--host АДРЕС]
 
   --mode dev          тестовый сервер: отдельный диск не обязателен
   --mode prod         рабочий сервер: --backup-root обязан быть точкой
@@ -47,9 +46,9 @@ usage() {
   --backup-root ПУТЬ  где хранить бэкапы (по умолчанию $BACKUP_ROOT)
   --host АДРЕС        IP или имя, по которому открывается панель
                       (по умолчанию — первый IP сервера)
-  --imap-listen IP    IPv4-адрес сервера, по которому почтовый клиент сможет
-                      смотреть бэкапы (только чтение, порт 143 без TLS — для VPN/LAN);
-                      off — только 127.0.0.1. Запоминается в env-файле
+
+Адрес, на котором Dovecot принимает почтовый клиент для просмотра бэкапов,
+задаётся в панели: «Настройки» → «Просмотр почты».
 EOF
     exit "${1:-0}"
 }
@@ -59,7 +58,7 @@ while [[ $# -gt 0 ]]; do
         --mode) MODE=${2:-}; shift 2 ;;
         --backup-root) BACKUP_ROOT=${2:-}; shift 2 ;;
         --host) PUBLIC_HOST=${2:-}; shift 2 ;;
-        --imap-listen) IMAP_LISTEN=${2:-}; IMAP_LISTEN_SET=1; shift 2 ;;
+        --imap-listen) die "--imap-listen больше нет: адрес просмотра почты задаётся в панели («Настройки» → «Просмотр почты»)" ;;
         -h|--help) usage 0 ;;
         *) warn "Неизвестный аргумент: $1"; usage 1 ;;
     esac
@@ -90,22 +89,6 @@ check_existing_env() {
     if [[ -n $cur_root && $cur_root != "$BACKUP_ROOT" ]]; then
         die "Бэкапы уже настроены в '$cur_root' ($ENV_FILE). Перенос хранилища — только вручную."
     fi
-}
-
-# Адрес просмотра почты: из аргумента или из env-файла прошлой установки
-resolve_imap_listen() {
-    if [[ $IMAP_LISTEN_SET == 0 ]]; then
-        [[ -f $ENV_FILE ]] && IMAP_LISTEN=$(sed -n 's/^MB_VIEW_IMAP_HOST=//p' "$ENV_FILE")
-    elif [[ $IMAP_LISTEN == off ]]; then
-        IMAP_LISTEN=""
-    fi
-    [[ -n $IMAP_LISTEN ]] || return 0
-    # Только IPv4: адрес попадает в конфиг Dovecot, а сети — в файл учёток, где «:» — разделитель
-    [[ $IMAP_LISTEN =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "--imap-listen: нужен IPv4-адрес, а не '$IMAP_LISTEN'"
-    [[ $IMAP_LISTEN != 127.* ]] || die "--imap-listen: 127.0.0.1 Dovecot слушает и так"
-    # Адреса нет на интерфейсах — Dovecot не запустится, и бэкапы встанут
-    ip -o -4 addr show | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$IMAP_LISTEN" ||
-        die "--imap-listen: адреса $IMAP_LISTEN нет на этом сервере (ip -4 addr). Укажите другой или off"
 }
 
 check_backup_disk() {
@@ -232,13 +215,12 @@ MB_IMAPSYNC_BIN=$IMAPSYNC_BIN
 EOF
 }
 
-# Адрес просмотра почты меняется повторным запуском установщика — обновляем строку
-save_imap_listen() {
-    if grep -q '^MB_VIEW_IMAP_HOST=' "$ENV_FILE"; then
-        sed -i "s|^MB_VIEW_IMAP_HOST=.*|MB_VIEW_IMAP_HOST=$IMAP_LISTEN|" "$ENV_FILE"
-    else
-        echo "MB_VIEW_IMAP_HOST=$IMAP_LISTEN" >>"$ENV_FILE"
-    fi
+# Раньше адрес просмотра почты задавал установщик (MB_VIEW_IMAP_HOST). `mail-backup init`
+# переносит его в настройки панели — после этого строка в env-файле не нужна
+drop_legacy_imap_listen() {
+    grep -q '^MB_VIEW_IMAP_HOST=' "$ENV_FILE" || return 0
+    log "Адрес просмотра почты перенесён в панель — убираю MB_VIEW_IMAP_HOST из $ENV_FILE"
+    sed -i '/^MB_VIEW_IMAP_HOST=/d' "$ENV_FILE"
 }
 
 install_app() {
@@ -264,6 +246,11 @@ EOF
 }
 
 # --- Dovecot ------------------------------------------------------------------------------
+# IP просмотра почты, который сейчас в конфиге Dovecot (пусто — только 127.0.0.1)
+imap_view_address() {
+    sed -n 's/^listen = 127\.0\.0\.1, //p' "$LISTEN_CONF" 2>/dev/null || true
+}
+
 configure_dovecot() {
     local conf=/etc/dovecot/dovecot.conf tmp version template
     # У Dovecot 2.3 и 2.4 несовместимый синтаксис конфига — шаблон по версии
@@ -277,12 +264,18 @@ configure_dovecot() {
     # Оригинальный конфиг пакета сохраняем один раз
     [[ -e $conf.orig-mail_backup ]] || cp -a "$conf" "$conf.orig-mail_backup"
 
+    # Адреса Dovecot — в $LISTEN_CONF: его пишет помощник по настройке из панели
+    # (файл запроса создал `mail-backup init`). Адрес не годится — остаётся прежний
+    # или только 127.0.0.1, установка не прерывается
+    install -m 0755 "$APP_DIR/deploy/dovecot-listen.sh" "$LISTEN_HELPER"
+    "$LISTEN_HELPER" "$DATA_DIR" --no-reload ||
+        warn "Адрес просмотра почты не применён: $(sed -n 's/^message=//p' "$DATA_DIR/dovecot/listen.status") — выберите другой в панели"
+
     tmp=$(mktemp)
     sed -e "s|@BACKUP_ROOT@|$BACKUP_ROOT|g" \
         -e "s|@DATA_DIR@|$DATA_DIR|g" \
         -e "s|@SERVICE_USER@|$SERVICE_USER|g" \
         -e "s|@SERVICE_UID@|$(id -u "$SERVICE_USER")|g" \
-        -e "s|@VIEW_LISTEN@|${IMAP_LISTEN:+, $IMAP_LISTEN}|g" \
         "$APP_DIR/deploy/dovecot/$template" >"$tmp"
     # Глобальные ACL (только чтение для учёток просмотра): в 2.3 — отдельным файлом,
     # в 2.4 — внутри конфига
@@ -325,11 +318,12 @@ EOF
         sleep 1
     done
     ss -ltn | grep -q '127\.0\.0\.1:143 ' || die "Dovecot не слушает 127.0.0.1:143 — см. journalctl -u dovecot"
-    local expected='127\.0\.0\.1:143 '
-    if [[ -n $IMAP_LISTEN ]]; then
-        ss -ltn | grep -qF "$IMAP_LISTEN:143 " || die "Dovecot не слушает $IMAP_LISTEN:143 — см. journalctl -u dovecot"
-        expected="$expected|${IMAP_LISTEN//./\\.}:143 "
-        log "Просмотр почты клиентом: $IMAP_LISTEN:143 (сети задаются в панели, «Настройки»)"
+    local expected='127\.0\.0\.1:143 ' view_addr
+    view_addr=$(imap_view_address)
+    if [[ -n $view_addr ]]; then
+        ss -ltn | grep -qF "$view_addr:143 " || die "Dovecot не слушает $view_addr:143 — см. journalctl -u dovecot"
+        expected="$expected|${view_addr//./\\.}:143 "
+        log "Просмотр почты клиентом: $view_addr:143 (адрес и сети — в панели, «Настройки»)"
     fi
     if ss -ltn | grep -E ':(143|993) ' | grep -Evq "$expected"; then
         warn "Dovecot слушает лишние адреса — проверьте: ss -ltnp | grep dovecot"
@@ -356,13 +350,17 @@ install_services() {
         warn "systemd не запущен — сервисы mail-backup-web и mail-backup-worker не установлены"
         return
     fi
-    log "Сервисы systemd: mail-backup-web, mail-backup-worker"
+    log "Сервисы systemd: mail-backup-web, mail-backup-worker, mail-backup-dovecot-listen"
     local unit
-    for unit in mail-backup-web mail-backup-worker; do
-        render_template "$APP_DIR/deploy/systemd/$unit.service" "/etc/systemd/system/$unit.service"
+    for unit in mail-backup-web.service mail-backup-worker.service \
+        mail-backup-dovecot-listen.service mail-backup-dovecot-listen.path; do
+        render_template "$APP_DIR/deploy/systemd/$unit" "/etc/systemd/system/$unit"
     done
     systemctl daemon-reload
     systemctl enable -q mail-backup-web mail-backup-worker
+    # Адрес просмотра почты из панели применяется сам: path-юнит следит за файлом запроса
+    systemctl enable -q mail-backup-dovecot-listen.path
+    systemctl restart mail-backup-dovecot-listen.path
     # restart, а не start: при обновлении сервисы должны подхватить новый код
     systemctl restart mail-backup-web mail-backup-worker
 
@@ -412,24 +410,21 @@ $err
     fi
     if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
         warn "Включён ufw: откройте порты для панели — sudo ufw allow 80,443/tcp"
-        if [[ -n $IMAP_LISTEN ]]; then
-            warn "Для просмотра почты — порт 143 только из сети VPN: sudo ufw allow from <сеть VPN> to any port 143 proto tcp"
-        fi
+        warn "Для просмотра почты клиентом по IP — порт 143 только из сети VPN: sudo ufw allow from <сеть VPN> to any port 143 proto tcp"
     fi
 }
 
 # --- Запуск -------------------------------------------------------------------------------
 check_system
 check_existing_env
-resolve_imap_listen
 check_backup_disk
 install_packages
 install_imapsync
 check_restic
 setup_user_and_dirs
 write_env_file
-save_imap_listen
 install_app
+drop_legacy_imap_listen
 configure_dovecot
 install_services
 configure_nginx
@@ -446,7 +441,7 @@ cat <<EOF
   Данные:    $DATA_DIR
   Бэкапы:    $BACKUP_ROOT
   Настройки: $ENV_FILE
-  IMAP для просмотра: ${IMAP_LISTEN:-только 127.0.0.1}
+  IMAP для просмотра: $(view_addr=$(imap_view_address); echo "${view_addr:-только 127.0.0.1}") (меняется в панели)
 EOF
 if [[ -n $SETUP_URL ]]; then
     cat <<EOF
