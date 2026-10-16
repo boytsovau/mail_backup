@@ -113,6 +113,8 @@ def test_mailbox_create_edit_delete(logged_in):
         box = session.query(Mailbox).one()
         assert box.schedule == "03:00, 15:30"
         assert crypto.decrypt(box.password_enc) == "app-pass"
+        # По умолчанию бэкап не удаляет письма, удалённые на хостере
+        assert box.mirror_deletions is False
         box_id = box.id
     assert "Почта" in logged_in.get("/").text
     assert "Почта" in logged_in.get("/mailboxes").text
@@ -123,12 +125,13 @@ def test_mailbox_create_edit_delete(logged_in):
     r = logged_in.post(f"/mailboxes/{box_id}/edit", data={
         "csrf_token": csrf_of(page.text), "provider": "yandex", "host": "imap.yandex.ru", "port": "993",
         "security": "ssl", "login": "hacker@x.ru", "password": "", "name": "Новая", "schedule": "",
-        "retention_days": "0",
+        "retention_days": "0", "mirror_deletions": "on",
     }, follow_redirects=False)
     assert r.status_code == 303
     with new_session() as session:
         box = session.get(Mailbox, box_id)
         assert (box.name, box.login, box.enabled, box.schedule) == ("Новая", "user@yandex.ru", False, None)
+        assert box.mirror_deletions is True
         assert crypto.decrypt(box.password_enc) == "app-pass"
 
     r = logged_in.post(f"/mailboxes/{box_id}/delete", data={"csrf_token": csrf(logged_in)}, follow_redirects=False)
@@ -433,7 +436,7 @@ def test_restic_page_toggle_and_settings(logged_in):
     assert r.status_code == 303
     with new_session() as session:
         assert app_settings.load_restic(session).enabled is False
-    assert "зеркало <strong>не удаляет</strong>" in logged_in.get("/restic").text
+    assert "Снимки выключены" in logged_in.get("/restic").text
 
     logged_in.post("/restic/settings", data={"csrf_token": token, "schedule": "4:30, 23:00"})
     with new_session() as session:

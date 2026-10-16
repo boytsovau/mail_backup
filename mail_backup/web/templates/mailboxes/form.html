@@ -72,10 +72,20 @@
       </label>
       <label>Хранить историю, дней
         <input name="retention_days" value="{{ form.retention_days }}" inputmode="numeric" size="6">
-        <span class="hint">Сколько дней хранить снимки restic — в том числе письма, удалённые на хостере. 0 — бессрочно.
+        <span class="hint">Сколько дней хранить снимки restic. 0 — бессрочно.
           Действует, когда <a href="/restic">снимки</a> включены.</span>
         {{ field_error(errors, 'retention_days') }}
       </label>
+      <label class="check"><input type="checkbox" name="mirror_deletions" {{ 'checked' if form.mirror_deletions }}>
+        Удалять из бэкапа письма, удалённые на хостере</label>
+      <p class="hint">
+        Выключено (по умолчанию) — бэкап только пополняется: удалённое на хостере остаётся в нём навсегда,
+        даже если с ящика пропадёт вся почта. Расплата — рост диска и дубли писем, перенесённых между папками.<br>
+        Включено — бэкап повторяет ящик, а удалённые письма остаются <strong>только в снимках restic</strong>
+        и пропадают вместе с ними по сроку хранения. Если на хостере удалят всю почту, через этот срок её не станет
+        и в бэкапе. Работает, только когда <a href="/restic">снимки</a> включены и restic готов, — иначе бэкап
+        ничего не удаляет.
+      </p>
       <label>Исключить папки (регулярное выражение)
         <input name="exclude_folders" value="{{ form.exclude_folders }}" placeholder="например: ^Спам$|^Корзина$">
         {{ field_error(errors, 'exclude_folders') }}

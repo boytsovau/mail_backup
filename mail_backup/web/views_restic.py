@@ -122,11 +122,10 @@ async def restic_toggle(request: Request, session: Session = Depends(get_session
     enabled = (await request.form()).get("enabled") == "1"
     app_settings.save_restic(session, app_settings.load_restic(session), enabled=enabled)
     if enabled:
-        flash(request, "Снимки включены: после каждого бэкапа делается снимок, зеркало снова удаляет "
-                       "письма, удалённые на хостере (они остаются в снимках на срок хранения)")
+        flash(request, "Снимки включены: после каждого бэкапа делается снимок ящика")
     else:
-        flash(request, "Снимки выключены. Уже сделанные снимки остаются; зеркало больше не удаляет письма, "
-                       "удалённые на хостере", "warn")
+        flash(request, "Снимки выключены. Уже сделанные снимки остаются; пока снимков нет, из зеркала "
+                       "ничего не удаляется ни у одного ящика", "warn")
     return RedirectResponse("/restic", 303)
 
 

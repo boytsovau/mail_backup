@@ -29,11 +29,12 @@ def opt(cmd, name):
     return cmd[cmd.index(name) + 1]
 
 
-def test_backup_command_mirrors_and_protects_source(tmp_path):
+def test_backup_command_protects_source_and_mirror(tmp_path):
     job = Job(RunKind.BACKUP, ep(), Endpoint("127.0.0.1", 143, Security.PLAIN, "u@x.ru", "l"))
     cmd = build_command(job, imapsync_bin="imapsync", passfile1=tmp_path / "p1", passfile2=tmp_path / "p2", tmpdir=tmp_path)
     assert "--noexpunge1" in cmd
-    assert {"--delete2", "--delete2folders"} <= set(cmd)
+    # По умолчанию зеркало только накапливает: удалённое на хостере из бэкапа не удаляется
+    assert not {"--delete2", "--delete2folders"} & set(cmd)
     assert "--ssl1" in cmd and {"--nossl2", "--notls2"} <= set(cmd)
     # Пароль никогда не попадает в командную строку
     assert "secret" not in cmd and "l" not in cmd

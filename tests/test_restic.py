@@ -11,7 +11,7 @@ from conftest import add_mailbox
 from mail_backup import app_settings, config, crypto, restic, restic_tasks
 from mail_backup.config import get_settings
 from mail_backup.db import new_session
-from mail_backup.imapsync.command import Endpoint, Job, build_command
+from mail_backup.imapsync.command import Endpoint, Job, UnsafeCommandError, build_command
 from mail_backup.jobs import execute_run
 from mail_backup.models import (
     ResticRemote, ResticTask, ResticTaskKind, Run, RunKind, RunStatus, RunTrigger, utcnow,
@@ -55,12 +55,16 @@ def restic_on(fake_restic):
     return fake_restic
 
 
-def test_mirror_deletions_only_with_history(tmp_path):
+def test_mirror_deletions_flags(tmp_path):
     ep = Endpoint("h", 993, Security.SSL, "u", "p")
     kw = dict(imapsync_bin="imapsync", passfile1=tmp_path / "1", passfile2=tmp_path / "2", tmpdir=tmp_path)
-    assert "--delete2" in build_command(Job(RunKind.BACKUP, ep, ep), **kw)
-    cmd = build_command(Job(RunKind.BACKUP, ep, ep, mirror_deletions=False), **kw)
+    # По умолчанию зеркало ничего не удаляет
+    cmd = build_command(Job(RunKind.BACKUP, ep, ep), **kw)
     assert "--delete2" not in cmd and "--delete2folders" not in cmd and "--noexpunge1" in cmd
+    assert {"--delete2", "--delete2folders"} <= set(build_command(Job(RunKind.BACKUP, ep, ep, mirror_deletions=True), **kw))
+    # Прочие удаления на host2 запрещены и в бэкапе
+    with pytest.raises(UnsafeCommandError):
+        build_command(Job(RunKind.BACKUP, ep, ep, extra_args=["--expunge2"]), **kw)
 
 
 def test_settings_bool_roundtrip():
@@ -80,8 +84,8 @@ def test_backup_makes_snapshot_and_applies_retention(fake_imapsync, restic_on):
         assert run.status == RunStatus.SUCCESS, run.error_message
         assert run.snapshot_id and run.snapshot_added == 999 and run.snapshot_error is None
         assert run.phase is None and run.pid is None
-        # История есть — зеркало удаляет удалённое на хостере
-        assert "--delete2" in imapsync_args(fake_imapsync)
+        # Снимки включены, но удаление у ящика по умолчанию выключено
+        assert "--delete2" not in imapsync_args(fake_imapsync)
 
         calls = restic_on()
         backup = next(c for c in calls if "backup" in c)
@@ -93,11 +97,25 @@ def test_backup_makes_snapshot_and_applies_retention(fake_imapsync, restic_on):
         assert not any(get_settings().restic_password_file.read_text() in a for c in calls for a in c)
 
 
+def deleting_mailbox(session):
+    box = add_mailbox(session)
+    box.mirror_deletions = True
+    session.commit()
+    return box
+
+
+def test_mirror_deletions_with_history(fake_imapsync, restic_on):
+    with new_session() as session:
+        run = execute_run(session, new_run(session, deleting_mailbox(session)).id)
+        assert run.status == RunStatus.SUCCESS and run.snapshot_id
+    assert "--delete2" in imapsync_args(fake_imapsync)
+
+
 def test_snapshots_off_keeps_deleted_mail(fake_imapsync, restic_on):
     with new_session() as session:
         app_settings.save_restic(session, app_settings.load_restic(session), enabled=False)
-        box = add_mailbox(session)
-        run = execute_run(session, new_run(session, box).id)
+        # Даже ящик с удалением: без истории удалённое пропало бы насовсем
+        run = execute_run(session, new_run(session, deleting_mailbox(session)).id)
         assert run.status == RunStatus.SUCCESS and run.snapshot_id is None
     assert "--delete2" not in imapsync_args(fake_imapsync)
     assert "backup" not in subcommands(restic_on)
@@ -106,31 +124,42 @@ def test_snapshots_off_keeps_deleted_mail(fake_imapsync, restic_on):
 def test_no_repository_means_no_deletions(fake_imapsync, fake_restic):
     # restic есть, но репозиторий не создан: снимков нет — и удалений в зеркале тоже
     with new_session() as session:
-        run = execute_run(session, new_run(session, add_mailbox(session)).id)
-        assert run.status == RunStatus.SUCCESS
+        run = execute_run(session, new_run(session, deleting_mailbox(session)).id)
+        assert run.status == RunStatus.SUCCESS and run.snapshot_id is None
     assert "--delete2" not in imapsync_args(fake_imapsync)
+    assert "backup" not in subcommands(fake_restic)
 
 
-def test_first_snapshot_taken_before_mirroring(fake_imapsync, restic_on):
+def test_snapshot_before_deleting_unsnapshotted_mirror(fake_imapsync, restic_on):
     with new_session() as session:
         box = add_mailbox(session)
-        # В зеркале уже есть письма (копились, пока снимки были выключены)
+        # В зеркале уже есть письма (накопились без снимков)
         maildir = get_settings().maildir_root / box.local_login / "Maildir" / "cur"
         maildir.mkdir(parents=True)
         (maildir / "1:2,S").write_text("старое письмо")
-        run = execute_run(session, new_run(session, box).id)
-        assert run.status == RunStatus.SUCCESS and run.snapshot_id
+        # Без удалений снимок до бэкапа не нужен
+        execute_run(session, new_run(session, box).id)
+        assert subcommands(restic_on).count("backup") == 1
+
+        # Удаление включили: прошлый бэкап со снимком — снова только снимок после
+        box.mirror_deletions = True
+        session.commit()
+        execute_run(session, new_run(session, box).id)
         assert subcommands(restic_on).count("backup") == 2
 
-        # Второй бэкап: снимок уже есть — только снимок после
+        # Прошлый бэкап остался без снимка (снимки выключали) — сначала снимок, потом удаления
+        app_settings.save_restic(session, app_settings.load_restic(session), enabled=False)
         execute_run(session, new_run(session, box).id)
-        assert subcommands(restic_on).count("backup") == 3
+        app_settings.save_restic(session, app_settings.load_restic(session), enabled=True)
+        run = execute_run(session, new_run(session, box).id)
+        assert run.status == RunStatus.SUCCESS and run.snapshot_id
+        assert subcommands(restic_on).count("backup") == 4
 
 
 def test_failed_first_snapshot_disables_deletions(fake_imapsync, restic_on, monkeypatch):
     monkeypatch.setenv("FAKE_RESTIC_FAIL", "backup:1")
     with new_session() as session:
-        box = add_mailbox(session)
+        box = deleting_mailbox(session)
         (get_settings().maildir_root / box.local_login).mkdir(parents=True)
         run = execute_run(session, new_run(session, box).id)
         # Почта скопирована, но без удалений и со снимком-ошибкой

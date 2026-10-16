@@ -37,15 +37,17 @@ class MailboxForm:
     schedule: str = "03:00"
     retention_days: str = "30"
     exclude_folders: str = ""
+    mirror_deletions: bool = False
     note: str = ""
 
     @classmethod
     async def from_request(cls, request: Request) -> "MailboxForm":
         form = await request.form()
-        values = {k: str(form.get(k, "")).strip() for k in cls.__dataclass_fields__ if k != "enabled"}
+        checkboxes = ("enabled", "mirror_deletions")
+        values = {k: str(form.get(k, "")).strip() for k in cls.__dataclass_fields__ if k not in checkboxes}
         # Пароль не обрезаем: пробелы могут быть его частью
         values["password"] = str(form.get("password", ""))
-        return cls(**values, enabled=form.get("enabled") == "on")
+        return cls(**values, **{k: form.get(k) == "on" for k in checkboxes})
 
     @classmethod
     def from_mailbox(cls, box: Mailbox) -> "MailboxForm":
@@ -60,6 +62,7 @@ class MailboxForm:
             schedule=box.schedule or "",
             retention_days=str(box.retention_days),
             exclude_folders=box.exclude_folders or "",
+            mirror_deletions=box.mirror_deletions,
             note=box.note or "",
         )
 
@@ -107,6 +110,7 @@ class MailboxForm:
         box.schedule = ", ".join(t.strftime("%H:%M") for t in parse_schedule(self.schedule)) or None
         box.retention_days = int(self.retention_days)
         box.exclude_folders = self.exclude_folders or None
+        box.mirror_deletions = self.mirror_deletions
         box.note = self.note or None
         if self.password:
             box.password_enc = crypto.encrypt(self.password)
@@ -189,7 +193,7 @@ async def mailbox_update(request: Request, mailbox_id: int, session: Session = D
     box = _get_box(session, mailbox_id)
     form = await MailboxForm.from_request(request)
     # Логин не меняется: другой логин — это другой ящик, его бэкап нельзя
-    # смешивать с этим (зеркало удалило бы старые письма)
+    # смешивать с этим (в зеркале оказались бы письма двух ящиков)
     form.login = box.login
     if errors := form.validate(creating=False):
         return _form_page(request, session, form, box=box, errors=errors, status_code=400)

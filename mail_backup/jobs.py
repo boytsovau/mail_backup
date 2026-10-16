@@ -90,7 +90,7 @@ def run_target_endpoint(run: Run) -> Endpoint:
         raise ValueError("Для восстановления и переноса нужен ящик-получатель")
     if not run.target_password_enc:
         raise ValueError("Пароль получателя уже удалён из БД — запустите мастер восстановления заново")
-    # Запись в локальный Dovecot испортила бы бэкапы: следующий бэкап с --delete2 снёс бы письма
+    # Запись в локальный Dovecot испортила бы бэкапы: чужие письма смешались бы с зеркалом ящика
     if is_local_host(run.target_host):
         raise ValueError("Получатель не может быть локальным хранилищем бэкапов")
     return Endpoint(
@@ -102,7 +102,7 @@ def run_target_endpoint(run: Run) -> Endpoint:
     )
 
 
-def build_job(run: Run, *, just_login: bool = False, mirror_deletions: bool = True) -> Job:
+def build_job(run: Run, *, just_login: bool = False, mirror_deletions: bool = False) -> Job:
     box = run.mailbox
     match run.kind:
         case RunKind.BACKUP | RunKind.ESTIMATE:
@@ -166,12 +166,28 @@ def mailbox_maildir(box: Mailbox):
     return get_settings().maildir_root / box.local_login
 
 
-def _has_snapshot(box: Mailbox) -> bool:
-    try:
-        return bool(restic.snapshots(restic.local_repo(), box.id))
-    except restic.ResticError:
-        # Не смогли проверить — считаем, что снимка нет: лишний снимок безопаснее
-        return False
+def _mirror_in_snapshot(session: Session, run: Run) -> bool:
+    """Нынешнее содержимое зеркала уже есть в снимке.
+
+    Зеркало меняют только бэкапы, так что достаточно, чтобы снимок был у последнего
+    завершённого настоящего бэкапа. Нет — например, снимки были выключены или бэкап
+    оборвался: письма, накопленные с тех пор, без снимка пропали бы при удалении.
+    """
+    if not mailbox_maildir(run.mailbox).is_dir():
+        return True
+    last = session.scalars(
+        select(Run)
+        .where(
+            Run.mailbox_id == run.mailbox_id,
+            Run.kind == RunKind.BACKUP,
+            Run.dry_run.is_(False),
+            Run.id != run.id,
+            Run.status.not_in((RunStatus.QUEUED, RunStatus.RUNNING)),
+        )
+        .order_by(Run.id.desc())
+        .limit(1)
+    ).first()
+    return bool(last and last.snapshot_id)
 
 
 def _take_snapshot(session: Session, run: Run, log_path, on_start) -> restic.BackupSummary:
@@ -309,30 +325,32 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
                   {"messages_transferred": p.copied, "bytes_transferred": p.copied_bytes})
         save_live(progress_done=p.done, progress_total=p.msgs_total, eta_seconds=p.eta_seconds, **copied)
 
-    # История в снимках restic: только с ней зеркало удаляет то, что удалено на хостере
-    history = run.kind == RunKind.BACKUP and snapshots_wanted(session)
-    snapshot = history and not run.dry_run and not just_login
+    snapshot = (run.kind == RunKind.BACKUP and not run.dry_run and not just_login
+                and snapshots_wanted(session))
+    # Удаления в зеркале — только по настройке ящика и только когда удалённое
+    # останется в снимках restic; иначе оно пропало бы из бэкапа насовсем
+    deletions = snapshot and run.mailbox.mirror_deletions
     try:
         if run.kind in (RunKind.BACKUP, RunKind.RESTORE, RunKind.ESTIMATE):
             check_backup_storage()
             # Учётка ящика в Dovecot должна существовать до подключения к нему
             dovecot.sync_users(session)
-        if snapshot and mailbox_maildir(run.mailbox).is_dir() and not _has_snapshot(run.mailbox):
-            # Первый снимок ящика — до зеркалирования: в зеркале могут быть письма,
-            # которые копились, пока снимки были выключены, а --delete2 их удалит
+        if deletions and not _mirror_in_snapshot(session, run):
+            # Снимок до imapsync: в зеркале есть письма, которых нет ни в одном снимке,
+            # а --delete2 удалит те из них, что удалены на хостере
             try:
                 _take_snapshot(session, run, log_path, on_start)
             except restic.ResticError as exc:
                 session.refresh(run, ["cancel_requested"])
                 if run.cancel_requested:
                     raise
-                history = False
-                run.snapshot_error = (f"Снимок перед зеркалированием не создан ({exc}); "
+                deletions = False
+                run.snapshot_error = (f"Снимок перед бэкапом не создан ({exc}); "
                                       "удалённое на хостере в этот раз из бэкапа не удалялось")
                 session.commit()
         if run.source_snapshot:
             _unpack_snapshot(session, run, log_path, on_start)
-        job = build_job(run, just_login=just_login, mirror_deletions=history)
+        job = build_job(run, just_login=just_login, mirror_deletions=deletions)
         result = run_imapsync(
             job,
             imapsync_bin=settings.imapsync_bin,

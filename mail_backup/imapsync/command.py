@@ -2,7 +2,8 @@
 
 Здесь же — защита от опасных флагов: на ящик-источник (host1) imapsync
 никогда не должен писать, а при восстановлении и переносе нельзя удалять
-письма в ящике-получателе (host2).
+письма в ящике-получателе (host2). В бэкапе удаление из зеркала — только
+--delete2/--delete2folders и только по настройке ящика.
 """
 
 import re
@@ -14,8 +15,10 @@ from ..providers import Security
 
 # Флаги, при которых imapsync меняет host1 (удаляет/expunge письма и папки)
 FORBIDDEN_HOST1_ARGS = frozenset({"--delete1", "--expunge1", "--delete1emptyfolders", "--expungeaftereach"})
-# Флаги удаления на host2 — допустимы только при бэкапе в собственное хранилище
+# Флаги удаления на host2
 DELETE_HOST2_ARGS = frozenset({"--delete2", "--delete2folders", "--delete2duplicates", "--expunge2", "--uidexpunge2"})
+# Из них в бэкапе допустимы только эти: зеркало повторяет удаления на хостере
+MIRROR_DELETE_ARGS = frozenset({"--delete2", "--delete2folders"})
 
 
 # Имя папки для --subfolder2. imapsync (sanitize_subfolder) молча выбрасывает всё,
@@ -51,9 +54,9 @@ class Job:
     exclude_folders: str | None = None
     # Восстановление/перенос: положить всю иерархию источника в эту папку получателя
     subfolder2: str | None = None
-    # Бэкап: удалять из зеркала то, что удалено на хостере. Только когда история
-    # хранится в снимках restic — иначе удалённое пропало бы и из бэкапа
-    mirror_deletions: bool = True
+    # Бэкап: удалять из зеркала то, что удалено на хостере. По умолчанию нет —
+    # если на хостере удалят все письма, зеркало не опустеет вслед за ним
+    mirror_deletions: bool = False
     # Бэкап: каталог кэша сверки (imapsync --usecache). Письма из кэша imapsync не
     # сверяет по заголовкам заново — повторный бэкап не читает заголовки всего ящика
     cache_dir: Path | None = None
@@ -105,8 +108,7 @@ def build_command(
 
     if job.kind == RunKind.BACKUP:
         if job.mirror_deletions:
-            # Зеркало ящика: удалённое на хостере удаляется и из зеркала.
-            # История (в т.ч. удалённые письма) хранится в снимках restic.
+            # Удалённое на хостере удаляется и из зеркала; история — в снимках restic
             cmd += ["--delete2", "--delete2folders"]
         if job.cache_dir:
             # Пара «UID на хостере → UID в зеркале» запоминается после копирования или
@@ -142,7 +144,8 @@ def check_safe(kind: RunKind, cmd: list[str]) -> None:
     args = set(cmd)
     if bad := args & FORBIDDEN_HOST1_ARGS:
         raise UnsafeCommandError(f"Запрещённые флаги для источника: {', '.join(sorted(bad))}")
-    if kind != RunKind.BACKUP and (bad := args & DELETE_HOST2_ARGS):
+    allowed = MIRROR_DELETE_ARGS if kind == RunKind.BACKUP else frozenset()
+    if bad := (args & DELETE_HOST2_ARGS) - allowed:
         raise UnsafeCommandError(
             f"Удаление в ящике-получателе запрещено ({kind}): {', '.join(sorted(bad))}"
         )

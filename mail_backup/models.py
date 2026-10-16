@@ -70,6 +70,9 @@ class Mailbox(Base):
     retention_days: Mapped[int] = mapped_column(default=0)
     # Регулярное выражение для папок, которые не нужно копировать
     exclude_folders: Mapped[str | None] = mapped_column(Text)
+    # Удалять из зеркала то, что удалено на хостере (тогда удалённое — только в снимках
+    # restic на срок хранения). По умолчанию нет: зеркало только накапливает
+    mirror_deletions: Mapped[bool] = mapped_column(default=False, server_default="0")
     note: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
