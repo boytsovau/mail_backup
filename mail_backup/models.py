@@ -75,7 +75,10 @@ class Mailbox(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
-    runs: Mapped[list["Run"]] = relationship(back_populates="mailbox")
+    # Запуски удаляет сама БД (ondelete=CASCADE); без passive_deletes ORM пыталась бы
+    # обнулить mailbox_id у запусков, и удаление ящика с историей падало бы
+    runs: Mapped[list["Run"]] = relationship(back_populates="mailbox", cascade="all, delete-orphan",
+                                             passive_deletes=True)
 
     @property
     def view_login(self) -> str:

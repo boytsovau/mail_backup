@@ -119,6 +119,9 @@ def build_job(run: Run, *, just_login: bool = False, mirror_deletions: bool = Tr
         case _:
             raise ValueError(f"Неизвестный тип запуска: {run.kind}")
     transfer = run.kind in (RunKind.RESTORE, RunKind.MIGRATE)
+    cache = mailbox_cache_dir(box) if run.kind == RunKind.BACKUP else None
+    if cache:
+        cache.mkdir(parents=True, exist_ok=True, mode=0o700)
     return Job(
         kind=RunKind(run.kind),
         source=source,
@@ -128,8 +131,28 @@ def build_job(run: Run, *, just_login: bool = False, mirror_deletions: bool = Tr
         exclude_folders=box.exclude_folders,
         subfolder2=run.target_subfolder if transfer else None,
         mirror_deletions=mirror_deletions,
+        cache_dir=cache,
         extra_args=extra,
     )
+
+
+def mailbox_cache_dir(box: Mailbox):
+    """Кэш сверки imapsync ящика. Внутри imapsync раскладывает его по хостам, логинам
+    и папкам — смена сервера ящика сама даёт новый, пустой кэш."""
+    return get_settings().imapsync_cache_dir / str(box.id)
+
+
+def reset_cache(box: Mailbox) -> bool:
+    """Удаляет кэш сверки: следующий бэкап сверит все письма по заголовкам.
+
+    Нужно, если хостер перенумеровал письма (сменил UIDVALIDITY) — imapsync этого
+    не замечает и по старому кэшу мог бы пропустить новые письма. Возвращает,
+    был ли кэш.
+    """
+    path = mailbox_cache_dir(box)
+    existed = path.exists()
+    shutil.rmtree(path, ignore_errors=True)
+    return existed
 
 
 # --- Снимки restic ----------------------------------------------------------------------
@@ -280,7 +303,11 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
         if now - last_save < PROGRESS_SAVE_INTERVAL:
             return
         last_save = now
-        save_live(progress_done=p.done, progress_total=p.msgs_total, eta_seconds=p.eta_seconds)
+        # Скопированное — в те же поля, что и итог: итоговая статистика их перезапишет,
+        # а при сбое останется то, что успело скопироваться
+        copied = ({"messages_planned": p.planned} if run.dry_run else
+                  {"messages_transferred": p.copied, "bytes_transferred": p.copied_bytes})
+        save_live(progress_done=p.done, progress_total=p.msgs_total, eta_seconds=p.eta_seconds, **copied)
 
     # История в снимках restic: только с ней зеркало удаляет то, что удалено на хостере
     history = run.kind == RunKind.BACKUP and snapshots_wanted(session)
@@ -327,12 +354,17 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
         run.exit_code = result.exit_code
         run.status = status_from_exit(result.exit_code, cancelled=run.cancel_requested)
         for name, value in result.stats.as_dict().items():
-            setattr(run, name, value)
+            # Нет итога (imapsync оборвался) — остаются живые счётчики скопированного
+            if value is not None:
+                setattr(run, name, value)
         if result.stats.folders:
             run.folder_stats = json.dumps(result.stats.folders_as_dicts(), ensure_ascii=False)
         if result.last_progress:
             run.progress_done = result.last_progress.done
             run.progress_total = result.last_progress.msgs_total
+            if result.stats.messages_transferred is None and not run.dry_run:
+                run.messages_transferred = result.last_progress.copied
+                run.bytes_transferred = result.last_progress.copied_bytes
         run.eta_seconds = None
         run.pid = None
         if snapshot and run.status in DONE_OK:

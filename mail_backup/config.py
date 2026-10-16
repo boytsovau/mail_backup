@@ -59,6 +59,11 @@ class Settings(BaseSettings):
         return self.data_dir / "tmp"
 
     @property
+    def imapsync_cache_dir(self) -> Path:
+        # Кэш сверки imapsync (--usecache) — по подкаталогу на ящик, переживает запуски
+        return self.data_dir / "imapsync_cache"
+
+    @property
     def maildir_root(self) -> Path:
         return self.backup_root / "maildir"
 

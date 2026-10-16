@@ -196,6 +196,7 @@ def test_pause_and_stop_buttons(logged_in):
         session.commit()
     page = logged_in.get(f"/runs/{run_id}").text
     assert "на паузе" in page and "осталось" not in page
+    assert "5 / 10 сверено (50%)" in page and "скопировано писем: 0" in page
 
     r = logged_in.post(f"/runs/{run_id}/resume", data={"csrf_token": token, "next": "//evil.example"},
                        follow_redirects=False)
@@ -564,3 +565,30 @@ def test_view_networks_setting_survives_general_settings(logged_in):
         assert (prefs.view_allowed_nets, prefs.max_parallel_jobs) == ("10.8.0.0/24", 3)
     r = logged_in.post("/settings/view", data={"csrf_token": csrf(logged_in), "view_allowed_nets": "fd00::/8"})
     assert "только сети IPv4" in r.text
+
+
+def test_mailbox_reset_cache(logged_in):
+    from mail_backup import jobs
+
+    with new_session() as session:
+        box = add_mailbox(session)
+        box_id, cache = box.id, jobs.mailbox_cache_dir(box)
+    token = csrf(logged_in)
+    assert "/reset-cache" in logged_in.get(f"/mailboxes/{box_id}/edit").text
+    cache.mkdir(parents=True)
+    with new_session() as session:
+        # Во время бэкапа imapsync пишет в кэш — сбросить нельзя
+        session.add(Run(kind=models.RunKind.BACKUP, mailbox_id=box_id, status=RunStatus.RUNNING))
+        session.commit()
+    page = logged_in.post(f"/mailboxes/{box_id}/reset-cache", data={"csrf_token": token}).text
+    assert "дождитесь окончания" in page and cache.exists()
+    with new_session() as session:
+        session.query(Run).update({"status": RunStatus.SUCCESS})
+        session.commit()
+    page = logged_in.post(f"/mailboxes/{box_id}/reset-cache", data={"csrf_token": token}).text
+    assert "Кэш сверки сброшен" in page and not cache.exists()
+
+    # Удаление ящика убирает и его кэш
+    cache.mkdir(parents=True)
+    logged_in.post(f"/mailboxes/{box_id}/delete", data={"csrf_token": token})
+    assert not cache.exists()

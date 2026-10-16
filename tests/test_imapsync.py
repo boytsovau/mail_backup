@@ -355,3 +355,59 @@ def test_parse_nets():
     for bad in ("10.8.0.300", "fd00::/64", "vpn"):
         with pytest.raises(ValueError):
             app_settings.parse_nets(bad)
+
+
+def test_backup_cache_command(tmp_path):
+    cache = tmp_path / "cache"
+    job = Job(RunKind.BACKUP, ep(), ep(), cache_dir=cache)
+    cmd = build_command(job, imapsync_bin="imapsync", passfile1=tmp_path / "p1", passfile2=tmp_path / "p2",
+                        tmpdir=tmp_path / "run")
+    # Кэш imapsync лежит в --tmpdir — постоянный каталог ящика; pid — во временном каталоге запуска
+    assert "--usecache" in cmd and opt(cmd, "--tmpdir") == str(cache)
+    assert opt(cmd, "--pidfile") == str(tmp_path / "run" / "imapsync.pid")
+    # --useuid без заполненного кэша скопировал бы весь ящик заново
+    assert "--useuid" not in cmd
+
+    job = Job(RunKind.BACKUP, ep(), ep())
+    cmd = build_command(job, imapsync_bin="imapsync", passfile1=tmp_path, passfile2=tmp_path, tmpdir=tmp_path / "run")
+    assert "--usecache" not in cmd and opt(cmd, "--tmpdir") == str(tmp_path / "run")
+
+
+def test_backup_run_keeps_cache_between_runs(fake_imapsync):
+    with new_session() as session:
+        box = add_mailbox(session)
+        cache = jobs.mailbox_cache_dir(box)
+        run = Run(kind=RunKind.BACKUP, mailbox_id=box.id)
+        session.add(run)
+        session.commit()
+        assert execute_run(session, run.id).status == RunStatus.SUCCESS
+        args = json.loads(fake_imapsync.read_text())["args"]
+        assert "--usecache" in args and opt(args, "--tmpdir") == str(cache)
+        # Временный каталог запуска удалён, кэш остался для следующего бэкапа
+        assert cache.is_dir() and not list(get_settings().tmp_dir.glob("run_*"))
+
+        # Оценке кэш не нужен
+        estimate = Run(kind=RunKind.ESTIMATE, mailbox_id=box.id)
+        session.add(estimate)
+        session.commit()
+        execute_run(session, estimate.id)
+        assert "--usecache" not in json.loads(fake_imapsync.read_text())["args"]
+
+        assert jobs.reset_cache(box) and not cache.exists()
+        assert not jobs.reset_cache(box)
+
+
+def test_parser_counts_copies_and_hides_eta_of_incremental_backup():
+    parser = OutputParser()
+    # Перед каждой папкой imapsync печатает ETA; на повторном бэкапе почти всё пропускается
+    p = parser.feed("ETA: Wed Oct 14 18:00:02 2026  0 s  6000/6000 msgs left")
+    assert (p.done, p.copied, p.eta_seconds) == (0, 0, None)
+    p = parser.feed("msg INBOX/9 {300}   copied to INBOX/2   0.03 msgs/s  1 KiB/s 300 B copied "
+                    "ETA: Wed Oct 21 09:22:52 2026  449347 s  100/6000 msgs left")
+    # Прогноз «по скопированным» бессмыслен, когда 5899 из 5900 писем были сверены и пропущены
+    assert (p.done, p.copied, p.copied_bytes, p.eta_seconds) == (5900, 1, 300, None)
+
+    # Первый бэкап: копируется почти всё — прогноз imapsync показываем
+    parser = OutputParser()
+    progress = [p for line in SAMPLE.read_text(encoding="utf-8").splitlines() if (p := parser.feed(line))]
+    assert (progress[0].eta_seconds, progress[-1].copied, progress[-1].copied_bytes) == (2, 3, 5300)

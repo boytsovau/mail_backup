@@ -54,6 +54,9 @@ class Job:
     # Бэкап: удалять из зеркала то, что удалено на хостере. Только когда история
     # хранится в снимках restic — иначе удалённое пропало бы и из бэкапа
     mirror_deletions: bool = True
+    # Бэкап: каталог кэша сверки (imapsync --usecache). Письма из кэша imapsync не
+    # сверяет по заголовкам заново — повторный бэкап не читает заголовки всего ящика
+    cache_dir: Path | None = None
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -89,7 +92,9 @@ def build_command(
     cmd += [
         # Лог пишем сами из stdout, свой файл imapsync не нужен
         "--nolog",
-        "--tmpdir", str(tmpdir),
+        # Кэш imapsync живёт в <tmpdir>/imapsync_cache: при кэше tmpdir — постоянный
+        # каталог ящика, иначе — временный каталог запуска
+        "--tmpdir", str(job.cache_dir or tmpdir),
         "--pidfile", str(tmpdir / "imapsync.pid"),
         # Явно запрещаем expunge на источнике
         "--noexpunge1",
@@ -103,6 +108,11 @@ def build_command(
             # Зеркало ящика: удалённое на хостере удаляется и из зеркала.
             # История (в т.ч. удалённые письма) хранится в снимках restic.
             cmd += ["--delete2", "--delete2folders"]
+        if job.cache_dir:
+            # Пара «UID на хостере → UID в зеркале» запоминается после копирования или
+            # сверки; сверка по заголовкам — только для писем не из кэша. --useuid не
+            # берём: без заполненного кэша он скопировал бы весь ящик заново
+            cmd.append("--usecache")
     elif job.kind == RunKind.ESTIMATE:
         # Только размеры папок (EXAMINE + FETCH размеров), письма не копируются
         cmd.append("--justfoldersizes")

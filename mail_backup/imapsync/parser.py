@@ -21,6 +21,10 @@ _ETA_RE = re.compile(r"ETA: .*?\s(\d+) s\s+(\d+)/(\d+) msgs left")
 #   msg INBOX/12 copying to INBOX 	(not really since --dry mode) ETA: ...
 _DRY_COPY_RE = re.compile(r"^msg .+ copying to .+not really since --dry mode")
 
+# Скопированное письмо (функция copy_message), в фигурных скобках — размер в байтах:
+#   msg INBOX/12 {3456}  copied to INBOX/7  1.00 msgs/s ... ETA: ...
+_COPIED_RE = re.compile(r"^msg .+ \{(\d+)\}\s+copied to ")
+
 # Поле статистики → регулярное выражение; при повторах побеждает последнее значение
 # (размеры ящиков печатаются в начале и в конце работы, нам нужны итоговые)
 _STAT_RES: dict[str, re.Pattern[str]] = {
@@ -67,9 +71,19 @@ EXIT_WITH_ERRORS = 111  # синхронизация прошла, но част
 
 @dataclass
 class Progress:
+    """Живой прогресс.
+
+    msgs_total — все письма источника, done — сколько из них imapsync уже обработал:
+    скопировал или сверил и пропустил (уже есть в получателе). copied/copied_bytes —
+    сколько на самом деле скопировано, planned — сколько скопировал бы пробный прогон.
+    """
+
     msgs_left: int
     msgs_total: int
-    eta_seconds: int
+    eta_seconds: int | None
+    copied: int = 0
+    copied_bytes: int = 0
+    planned: int = 0
 
     @property
     def done(self) -> int:
@@ -114,14 +128,27 @@ class OutputParser:
     def __init__(self) -> None:
         self.stats = Stats()
         self.last_progress: Progress | None = None
+        self.copied = 0
+        self.copied_bytes = 0
 
     def feed(self, line: str) -> Progress | None:
         """Обрабатывает строку; возвращает прогресс, если строка его содержит."""
         line = line.strip()
-        # Строка пробного копирования содержит и ETA — считаем её до разбора прогресса
+        # Строки копирования содержат и ETA — считаем их до разбора прогресса
         if _DRY_COPY_RE.match(line):
             self.stats.messages_planned = (self.stats.messages_planned or 0) + 1
+        elif m := _COPIED_RE.match(line):
+            self.copied += 1
+            self.copied_bytes += int(m.group(1))
         if progress := parse_progress(line):
+            progress.copied, progress.copied_bytes = self.copied, self.copied_bytes
+            progress.planned = self.stats.messages_planned or 0
+            copies = progress.copied + progress.planned
+            # imapsync считает остаток как «время / скопировано × необработанные». Если
+            # большая часть писем уже была в получателе (повторный бэкап), почти всё время
+            # ушло на сверку, и прогноз выходит в разы больше правды — не показываем его
+            if not copies or copies * 2 < progress.done:
+                progress.eta_seconds = None
             self.last_progress = progress
             return progress
         if m := _FOLDER_RE.match(line):

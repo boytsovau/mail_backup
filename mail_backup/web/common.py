@@ -101,6 +101,13 @@ def fmt_size(value: int | None) -> str:
     return f"{size:.1f} ТБ"
 
 
+def fmt_num(value: int | None) -> str:
+    """12345 → «12 345» (неразрывный пробел между разрядами)."""
+    if value is None:
+        return "—"
+    return f"{value:,}".replace(",", "\u00a0")
+
+
 def fmt_duration(seconds: float | None) -> str:
     if seconds is None:
         return "—"
@@ -136,4 +143,4 @@ templates.env.globals.update(
     KIND_LABELS=KIND_LABELS,
     TRIGGER_LABELS=TRIGGER_LABELS,
 )
-templates.env.filters.update(size=fmt_size, duration=fmt_duration)
+templates.env.filters.update(size=fmt_size, duration=fmt_duration, num=fmt_num)

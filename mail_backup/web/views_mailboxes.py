@@ -12,7 +12,7 @@ from .. import app_settings, crypto, dovecot
 from ..config import get_settings
 from ..db import get_session
 from ..imapcheck import check_login
-from ..jobs import active_run, enqueue_run
+from ..jobs import active_run, enqueue_run, reset_cache
 from ..models import Mailbox, RunKind, RunTrigger
 from ..providers import PROVIDERS, Security, get_provider
 from ..schedule import parse_schedule
@@ -207,11 +207,26 @@ def mailbox_delete(request: Request, mailbox_id: int, session: Session = Depends
         return RedirectResponse(f"/mailboxes/{box.id}/edit", 303)
     maildir = get_settings().maildir_root / box.local_login
     name = box.name
+    reset_cache(box)
     session.delete(box)
     session.commit()
     dovecot.sync_users(session)
     flash(request, f"Ящик «{name}» удалён. Его бэкап остался на диске: {maildir}")
     return RedirectResponse("/mailboxes", 303)
+
+
+@router.post("/{mailbox_id}/reset-cache", dependencies=[Depends(csrf_protect)])
+def mailbox_reset_cache(request: Request, mailbox_id: int, session: Session = Depends(get_session)):
+    """Полная сверка: следующий бэкап сверит с зеркалом все письма, а не только новые."""
+    box = _get_box(session, mailbox_id)
+    if active_run(session, box.id):
+        # imapsync пишет в кэш по ходу бэкапа — удалять из-под него нельзя
+        flash(request, "Сначала дождитесь окончания или отмените текущий запуск", "error")
+    elif reset_cache(box):
+        flash(request, "Кэш сверки сброшен: следующий бэкап сверит с бэкапом все письма ящика — это дольше обычного")
+    else:
+        flash(request, "Кэша сверки ещё нет: следующий бэкап и так сверит все письма")
+    return RedirectResponse(f"/mailboxes/{box.id}/edit", 303)
 
 
 @router.post("/{mailbox_id}/view", dependencies=[Depends(csrf_protect)])

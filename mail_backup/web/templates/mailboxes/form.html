@@ -104,6 +104,11 @@
       <input type="hidden" name="dry_run" value="1">
       <button title="imapsync --dry: показать, что будет скопировано, ничего не копируя">Пробный прогон</button>
     </form>
+    <form method="post" action="/mailboxes/{{ box.id }}/reset-cache" class="inline"
+          data-confirm="Сбросить кэш сверки? Следующий бэкап заново сверит все письма ящика по заголовкам — это займёт столько же, сколько сверка без кэша. Нужно, если есть сомнения, что бэкап полный (например, хостер перенёс ящик на другой сервер).">
+      {{ csrf() }}
+      <button title="Следующий бэкап сверит с бэкапом все письма, а не только новые">Полная сверка</button>
+    </form>
     <form method="post" action="/mailboxes/{{ box.id }}/delete" class="inline"
           data-confirm="Удалить ящик «{{ box.name }}» из панели? Бэкап на диске останется.">
       {{ csrf() }}

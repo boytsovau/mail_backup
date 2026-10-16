@@ -16,11 +16,16 @@
   {%- elif run.phase == 'unpack' -%}
     <span class="muted">распаковка снимка от {{ dt(run.source_snapshot_time) }}…</span>
   {%- elif run.progress_total -%}
+    {# Полоса — сколько писем источника imapsync уже прошёл: скопировал или сверил с
+       получателем и пропустил. Сколько на самом деле скопировано — строкой ниже #}
     {% set pct = (run.progress_done * 100 / run.progress_total) | round | int %}
-    <div class="progress" title="{{ run.progress_done }} из {{ run.progress_total }} писем">
+    {% set verb = 'сверено' if run.kind == 'backup' else 'обработано' %}
+    {% set copied = run.messages_planned if run.dry_run else run.messages_transferred %}
+    <div class="progress" title="{{ verb | capitalize }} {{ run.progress_done | num }} из {{ run.progress_total | num }} писем: уже были в получателе или скопированы">
       <div class="progress-bar" style="width: {{ pct }}%"></div>
-      <span>{{ run.progress_done }} / {{ run.progress_total }} ({{ pct }}%){% if run.paused_at %} · пауза{% elif run.eta_seconds %} · осталось ≈ {{ run.eta_seconds | duration }}{% endif %}</span>
+      <span>{{ run.progress_done | num }} / {{ run.progress_total | num }} {{ verb }} ({{ pct }}%){% if run.paused_at %} · пауза{% elif run.eta_seconds %} · осталось ≈ {{ run.eta_seconds | duration }}{% endif %}</span>
     </div>
+    <div class="muted small">{{ 'будет скопировано' if run.dry_run else 'скопировано' }} писем: {{ (copied or 0) | num }}{% if not run.dry_run and run.bytes_transferred %}, {{ run.bytes_transferred | size }}{% endif %}</div>
   {%- elif run.status == 'running' -%}
     <span class="muted">подключение, подсчёт писем…</span>
   {%- endif -%}
