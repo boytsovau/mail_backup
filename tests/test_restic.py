@@ -355,7 +355,8 @@ def test_real_restic_snapshot_restore_and_copy(fake_imapsync, monkeypatch, tmp_p
     config.get_settings.cache_clear()
     restic.init_local()
     with new_session() as session:
-        box = add_mailbox(session)
+        # Снимок до imapsync делается только у ящика с удалением из зеркала
+        box = deleting_mailbox(session)
         maildir = get_settings().maildir_root / box.local_login / "Maildir" / "cur"
         maildir.mkdir(parents=True)
         (maildir / "1:2,S").write_text("письмо")
