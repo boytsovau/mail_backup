@@ -39,6 +39,7 @@ class Health(StrEnum):
     FAILED = "failed"  # последний настоящий бэкап — сбой или отмена
     STALE = "stale"  # по расписанию, но удачного бэкапа давно не было
     SNAPSHOT = "snapshot"  # снимки включены, но после последнего бэкапа снимка нет
+    HOLD = "hold"  # защита от проседания остановила удаление из зеркала
     NEVER = "never"  # бэкапа ещё не было, и это пока нормально
     OFF = "off"  # ящик выключен
 
@@ -49,6 +50,7 @@ HEALTH_LABELS = {
     Health.FAILED: "сбой",
     Health.STALE: "просрочен",
     Health.SNAPSHOT: "нет снимка",
+    Health.HOLD: "ящик просел",
     Health.NEVER: "ещё не было",
     Health.OFF: "выключен",
 }
@@ -82,6 +84,8 @@ def backup_health(box: Mailbox, last_real: Run | None, last_ok: Run | None, now:
         return Health.STALE if scheduled and box.created_at < now - STALE_AFTER else Health.NEVER
     if scheduled and last_ok.finished_at < now - STALE_AFTER:
         return Health.STALE
+    if box.mirror_deletions and box.deletions_hold_at:
+        return Health.HOLD
     if snapshots and (last_ok.snapshot_error or not last_ok.snapshot_id):
         return Health.SNAPSHOT
     return Health.WARNING if last_ok.status == RunStatus.WARNING else Health.OK
@@ -182,17 +186,22 @@ def settings_save(
     max_parallel_jobs: int = Form(...),
     timezone_name: str = Form(..., alias="timezone"),
     log_retention_days: int = Form(...),
+    deletion_guard_percent: int | None = Form(None),
     session: Session = Depends(get_session),
 ):
+    current = app_settings.load(session)
+    if deletion_guard_percent is None:
+        deletion_guard_percent = current.deletion_guard_percent
     try:
-        prefs = app_settings.validate(max_parallel_jobs, timezone_name.strip(), log_retention_days)
+        prefs = app_settings.validate(max_parallel_jobs, timezone_name.strip(), log_retention_days,
+                                      deletion_guard_percent)
     except ValueError as exc:
         flash(request, str(exc), "error")
     else:
         # Просмотр почты сохраняется своей формой — его поля оставляем как были
-        current = app_settings.load(session)
         app_settings.save(session, replace(current, max_parallel_jobs=prefs.max_parallel_jobs,
-                                           timezone=prefs.timezone, log_retention_days=prefs.log_retention_days))
+                                           timezone=prefs.timezone, log_retention_days=prefs.log_retention_days,
+                                           deletion_guard_percent=prefs.deletion_guard_percent))
         flash(request, "Настройки сохранены")
     return RedirectResponse("/settings", 303)
 

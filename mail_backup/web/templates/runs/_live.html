@@ -94,6 +94,12 @@
         {% if run.snapshot_error %}<div class="text-error">{{ run.snapshot_error }}</div>
         {% elif not run.snapshot_id %}<span class="muted">не делался{% if run.status in ('success', 'warning') %} — <a href="/restic">снимки выключены или не настроены</a>{% endif %}</span>{% endif %}</dd>
     {% endif %}
+    {% if run.kind == 'backup' and (run.guard_messages is not none or run.deletions_note) %}
+    <dt>Удаление из бэкапа</dt>
+    <dd>{% if run.deletions_note %}<div class="text-error">{{ run.deletions_note }}</div>
+        {% else %}разрешено{% endif %}
+        {% if run.guard_messages is not none %}<span class="muted">на хостере перед бэкапом: {{ run.guard_messages }} писем</span>{% endif %}</dd>
+    {% endif %}
     {% endif %}
   </dl>
 

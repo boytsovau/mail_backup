@@ -27,6 +27,7 @@
           <a href="/runs/{{ row.last_run.id }}">{{ status(row.last_run) }}</a>
           <div class="muted small">{{ dt(row.last_run.finished_at) }}</div>
           {% if row.health == 'stale' %}<span class="badge badge-health-stale" title="Удачного бэкапа не было больше суток">⏱ просрочен</span>{% endif %}
+          {% if row.health == 'hold' %}<span class="badge badge-health-hold" title="{{ row.box.deletions_hold_reason }}">⚠ ящик просел</span>{% endif %}
           {% if row.last_ok and row.last_ok.id != row.last_run.id %}
             <div class="muted small">последний удачный: {{ dt(row.last_ok.finished_at) }}</div>
           {% endif %}

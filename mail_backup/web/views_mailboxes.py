@@ -8,7 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from .. import app_settings, crypto, dovecot
+from .. import app_settings, crypto, deletion_guard, dovecot
 from ..config import get_settings
 from ..db import get_session
 from ..imapcheck import check_login
@@ -230,6 +230,17 @@ def mailbox_reset_cache(request: Request, mailbox_id: int, session: Session = De
         flash(request, "Кэш сверки сброшен: следующий бэкап сверит с бэкапом все письма ящика — это дольше обычного")
     else:
         flash(request, "Кэша сверки ещё нет: следующий бэкап и так сверит все письма")
+    return RedirectResponse(f"/mailboxes/{box.id}/edit", 303)
+
+
+@router.post("/{mailbox_id}/resume-deletions", dependencies=[Depends(csrf_protect)])
+def mailbox_resume_deletions(request: Request, mailbox_id: int, session: Session = Depends(get_session)):
+    """Админ проверил ящик после срабатывания защиты от проседания и разрешил удаление."""
+    box = _get_box(session, mailbox_id)
+    if box.deletions_hold_at:
+        deletion_guard.resume(session, box)
+        flash(request, "Удаление разрешено: следующий бэкап удалит из бэкапа письма, которых нет на хостере. "
+                       "Нынешнее число писем — новая точка отсчёта для защиты")
     return RedirectResponse(f"/mailboxes/{box.id}/edit", 303)
 
 

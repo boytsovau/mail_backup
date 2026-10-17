@@ -13,7 +13,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from . import app_settings, crypto, dovecot, restic
+from . import app_settings, crypto, deletion_guard, dovecot, restic
 from .config import get_settings
 from .imapsync.command import Endpoint, Job
 from .imapsync.parser import Progress, status_from_exit
@@ -335,6 +335,10 @@ def execute_run(session: Session, run_id: int, *, just_login: bool = False) -> R
             check_backup_storage()
             # Учётка ящика в Dovecot должна существовать до подключения к нему
             dovecot.sync_users(session)
+        if deletions:
+            # На хостере резко убыло писем — не повторяем это в зеркале (см. deletion_guard)
+            deletions = deletion_guard.allow_deletions(session, run,
+                                                       app_settings.load(session).deletion_guard_percent)
         if deletions and not _mirror_in_snapshot(session, run):
             # Снимок до imapsync: в зеркале есть письма, которых нет ни в одном снимке,
             # а --delete2 удалит те из них, что удалены на хостере

@@ -26,6 +26,9 @@ class AppSettings:
     # IP сервера, на котором Dovecot принимает почтовый клиент (кроме 127.0.0.1);
     # пусто — только локально. Применяет root-помощник (см. dovecot.request_listen)
     view_imap_host: str = ""
+    # Защита от проседания ящика: если на хостере писем стало меньше на столько процентов
+    # (от максимума за срок хранения), бэкап перестаёт удалять из зеркала; 0 — защита выключена
+    deletion_guard_percent: int = 10
 
     @property
     def tz(self) -> ZoneInfo:
@@ -79,17 +82,21 @@ def save_restic(session: Session, settings: ResticSettings, **changes) -> Restic
     return settings
 
 
-def validate(max_parallel_jobs: int, timezone: str, log_retention_days: int) -> AppSettings:
+def validate(max_parallel_jobs: int, timezone: str, log_retention_days: int,
+             deletion_guard_percent: int = AppSettings.deletion_guard_percent) -> AppSettings:
     """Проверяет значения из формы; ValueError с понятным текстом при ошибке."""
     if not 1 <= max_parallel_jobs <= 10:
         raise ValueError("Параллельных задач: от 1 до 10")
     if not 1 <= log_retention_days <= 3650:
         raise ValueError("Хранение логов: от 1 до 3650 дней")
+    if not 0 <= deletion_guard_percent <= 90:
+        raise ValueError("Порог защиты от проседания: от 1 до 90 %, 0 — выключена")
     try:
         ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, ValueError):
         raise ValueError(f"Неизвестный часовой пояс: {timezone}") from None
-    return AppSettings(max_parallel_jobs, timezone, log_retention_days)
+    return AppSettings(max_parallel_jobs, timezone, log_retention_days,
+                       deletion_guard_percent=deletion_guard_percent)
 
 
 def parse_nets(text: str) -> list[str]:

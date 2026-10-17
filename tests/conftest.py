@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mail_backup import config, crypto, db, dovecot
+from mail_backup import config, crypto, db, dovecot, imapcheck
 from mail_backup.models import Mailbox
 
 SAMPLE = Path(__file__).parent / "data" / "imapsync_output.txt"
@@ -32,6 +32,24 @@ def isolated_env(tmp_path, monkeypatch):
     db.get_engine().dispose()
     for cached in caches:
         cached.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def host_messages(monkeypatch):
+    """Счёт писем на хостере для защиты от проседания — без настоящего IMAP.
+
+    Словарь можно менять в тесте: count — число, error — текст ошибки ImapError.
+    """
+    state = {"count": 3, "error": None, "calls": 0}
+
+    def fake(*args, **kwargs):
+        state["calls"] += 1
+        if state["error"]:
+            raise imapcheck.ImapError(state["error"])
+        return state["count"]
+
+    monkeypatch.setattr(imapcheck, "count_messages", fake)
+    return state
 
 
 # Фальшивый imapsync: печатает образец вывода и сохраняет аргументы и пароли для проверки

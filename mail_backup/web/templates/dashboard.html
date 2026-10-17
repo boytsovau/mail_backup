@@ -22,13 +22,14 @@
 
 <div class="tiles">
   {% set enabled = rows | rejectattr('health', 'equalto', 'off') | list %}
-  {% set problems = health.failed + health.stale + health.snapshot + health.warning %}
-  <div class="tile {{ 'tile-alert' if health.failed or health.stale }}">
+  {% set problems = health.failed + health.stale + health.hold + health.snapshot + health.warning %}
+  <div class="tile {{ 'tile-alert' if health.failed or health.stale or health.hold }}">
     <div class="tile-label">Бэкапы в порядке</div>
     <div class="tile-value">{{ health.ok | length }} из {{ enabled | length }}</div>
     <div class="tile-sub">
       {% if health.failed %}<span class="text-error">✕ сбой: {{ health.failed | length }}</span> {% endif %}
       {% if health.stale %}<span class="text-error">⏱ просрочено: {{ health.stale | length }}</span> {% endif %}
+      {% if health.hold %}<span class="text-error">⚠ ящик просел: {{ health.hold | length }}</span> {% endif %}
       {% if health.snapshot %}<span class="text-warn">⚠ без снимка: {{ health.snapshot | length }}</span> {% endif %}
       {% if health.warning %}<span class="text-warn">⚠ с ошибками: {{ health.warning | length }}</span> {% endif %}
       {% if health.never %}ещё не было: {{ health.never | length }} {% endif %}
@@ -89,6 +90,7 @@
       <span class="muted">—
       {% if row.health == 'failed' %}последний бэкап не удался{% if row.last_ok %}, удачный был {{ dt(row.last_ok.finished_at) }}{% endif %}
       {% elif row.health == 'stale' %}{% if row.last_ok %}удачного бэкапа не было с {{ dt(row.last_ok.finished_at) }}{% else %}удачного бэкапа ещё не было{% endif %}
+      {% elif row.health == 'hold' %}{{ row.box.deletions_hold_reason }} — удаление из бэкапа остановлено {{ dt(row.box.deletions_hold_at) }}
       {% elif row.health == 'snapshot' %}снимок после бэкапа не создан{% if row.last_ok.snapshot_error %}: {{ row.last_ok.snapshot_error | truncate(140) }}{% endif %}
       {% else %}последний бэкап: ошибок по письмам {{ row.last_ok.errors_count or 0 }}{% endif %}
       </span>

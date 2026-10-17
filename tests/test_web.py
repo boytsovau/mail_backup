@@ -10,7 +10,7 @@ from mail_backup import app_settings, auth, crypto, models
 from mail_backup.config import get_settings
 from mail_backup.db import new_session
 from mail_backup.main import app
-from mail_backup.models import Mailbox, Run, RunStatus
+from mail_backup.models import Mailbox, Run, RunKind, RunStatus, utcnow
 from mail_backup.web import views_auth
 
 PASSWORD = "очень-надёжный-пароль"
@@ -639,3 +639,33 @@ def test_view_listen_address_from_panel(logged_in, monkeypatch):
     get_settings().dovecot_listen_status_file.write_text(
         "state=error\nmessage=Dovecot не открыл порт 143\nrequested=10.8.0.1\n")
     assert "не применён: Dovecot не открыл порт 143" in logged_in.get("/settings").text
+
+
+def test_deletion_guard_setting_and_resume(logged_in):
+    token = csrf(logged_in)
+    logged_in.post("/settings", data={"csrf_token": token, "max_parallel_jobs": 2, "timezone": "Europe/Moscow",
+                                      "log_retention_days": 90, "deletion_guard_percent": 25})
+    with new_session() as session:
+        assert app_settings.load(session).deletion_guard_percent == 25
+    r = logged_in.post("/settings", data={"csrf_token": token, "max_parallel_jobs": 2, "timezone": "Europe/Moscow",
+                                          "log_retention_days": 90, "deletion_guard_percent": 95})
+    assert "Порог защиты" in r.text
+
+    with new_session() as session:
+        box = add_mailbox(session)
+        box.mirror_deletions = True
+        box.deletions_hold_at = utcnow()
+        box.deletions_hold_reason = "на хостере 0 писем, а было до 1000 (−100%)"
+        session.add(Run(kind=RunKind.BACKUP, mailbox_id=box.id, status=RunStatus.SUCCESS,
+                        started_at=utcnow(), finished_at=utcnow()))
+        session.commit()
+        box_id = box.id
+    page = logged_in.get("/").text
+    assert "ящик просел" in page and "было до 1000" in page
+    page = logged_in.get(f"/mailboxes/{box_id}/edit").text
+    assert "Удаление из бэкапа остановлено" in page
+    r = logged_in.post(f"/mailboxes/{box_id}/resume-deletions", data={"csrf_token": csrf_of(page)})
+    assert "Удаление разрешено" in r.text and "Удаление из бэкапа остановлено" not in r.text
+    with new_session() as session:
+        box = session.get(Mailbox, box_id)
+        assert box.deletions_hold_at is None and box.deletions_confirmed_at is not None

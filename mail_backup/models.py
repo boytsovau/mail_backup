@@ -73,6 +73,13 @@ class Mailbox(Base):
     # Удалять из зеркала то, что удалено на хостере (тогда удалённое — только в снимках
     # restic на срок хранения). По умолчанию нет: зеркало только накапливает
     mirror_deletions: Mapped[bool] = mapped_column(default=False, server_default="0")
+    # Защита от проседания (deletion_guard): когда она остановила удаление из зеркала
+    # и почему; пусто — не останавливала. Снимает только админ кнопкой на странице ящика
+    deletions_hold_at: Mapped[datetime | None]
+    deletions_hold_reason: Mapped[str | None] = mapped_column(Text)
+    # Когда админ разрешил удаление после остановки: счёт писем до этого момента
+    # больше не служит точкой отсчёта
+    deletions_confirmed_at: Mapped[datetime | None]
     note: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
@@ -163,6 +170,10 @@ class Run(Base):
     snapshot_id: Mapped[str | None] = mapped_column(String(64))
     snapshot_added: Mapped[int | None]
     snapshot_error: Mapped[str | None] = mapped_column(Text)
+    # Бэкап с удалениями: сколько писем насчитала на хостере защита от проседания перед
+    # imapsync (deletion_guard) и почему в этот раз из зеркала ничего не удалялось
+    guard_messages: Mapped[int | None]
+    deletions_note: Mapped[str | None] = mapped_column(Text)
     # Восстановление из снимка: какой снимок и на какой момент; пароль временной
     # учётки Dovecot, куда снимок распаковывается (стирается после запуска)
     source_snapshot: Mapped[str | None] = mapped_column(String(64))
